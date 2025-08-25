@@ -1,21 +1,22 @@
-import expres,{ Application,Router  } from "express";
+import express, { Router } from "express";
 import { userController } from "../controllers/user.Controller";
-import  { roleGuards } from "../middlewares/verifyRole";
 
+export class UserRoute {
+  private router: Router = express.Router();
+  private controller = new userController();
 
-export class UserRoute{
-  private router:Router =expres.Router()
-  private controller=new userController()
- constructor(){
+  constructor() {
+    this.router.post("/task", this.controller.task);
+    this.router.get("/task-list", this.controller.taskList);
+    this.router.patch("/task-lock", this.controller.taskLock);
+    this.router.patch("/updateTask", this.controller.statusUpdate);
 
-     this.router.post("/task",this.controller.task)
-     this.router.get("/task-list",this.controller.taskList)
-     this.router.patch("/task-lock",this.controller.taskLock)
-     this.router.patch("/updateTask",this.controller.statusUpdate)
- }
- public getRouter():Router{
-    return this.router
+    this.router.all("*", (req, res) => {
+      res.status(404).json({ message: "Route not found in UserRoute" });
+    });
   }
 
-
+  public getRouter(): Router {
+    return this.router;
+  }
 }
