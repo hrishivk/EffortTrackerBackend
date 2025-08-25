@@ -12,12 +12,12 @@ const server = http.createServer(app);
 //database connection
 Database.init()
 
+
+expressConfig.configure(app)
+
 app.get('/', (req, res) => {
   res.send(' Server is running...');
 });
-expressConfig.configure(app)
-
-
 allMain.route(app)
 
 const config= new serverConfig(server)
