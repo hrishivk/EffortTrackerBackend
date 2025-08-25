@@ -3,7 +3,7 @@ import {Database } from './connection/db/dbConnection'
 import http from 'http';
 import { serverConfig } from './config/server';
 import { expressConfig } from './config/express.config';
-import { AllMain } from './routes';
+import { allMain } from './routes';
 
 
 const app: Application = express();
@@ -15,10 +15,8 @@ Database.init()
 
 expressConfig.configure(app)
 
-app.get('/', (req, res) => {
-  res.send(' Server is running...');
-});
-AllMain.route(app)
+
+allMain.route(app)
 
 const config= new serverConfig(server)
 config.start();

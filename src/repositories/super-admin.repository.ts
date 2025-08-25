@@ -142,26 +142,26 @@ return plainUsers;
   }
   public async editUser(data: AddUserDTO) {
     try {
-      // const { id, fullName, email, role, projects, profile, profileFilename } =
-      //   data;
+      const { id, fullName, email, role, projects, profile, profileFilename } =
+        data;
 
-      // const user = await User.findByPk(id);
-      // if (!user) throw new Error("User not found");
-      // const updateLoad: Partial<AddUserDTO> = {
-      //   fullName,
-      //   email,
-      //   role,
-      //   projects,
-      //   image: profile
-      //     ? profile
-      //     : profileFilename
-      //     ? `${envConfig.BASE_URL}/uploads/${profileFilename}`
-      //     : undefined,
-      // };
+      const user = await User.findByPk(id);
+      if (!user) throw new Error("User not found");
+      const updateLoad: Partial<AddUserDTO> = {
+        fullName,
+        email,
+        role,
+        projects,
+        image: profile
+          ? profile
+          : profileFilename
+          ? `${envConfig.BASE_URL}/uploads/${profileFilename}`
+          : undefined,
+      };
 
-      // await user.update(updateLoad);
-      // console.log("user", user);
-      // return user;
+      await user.update(updateLoad);
+      console.log("user", user);
+      return user;
     } catch (error) {
       throw error;
     }
