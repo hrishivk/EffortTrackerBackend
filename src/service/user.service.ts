@@ -185,39 +185,39 @@ export class userService {
   }
 
   public async addUser(data: AddUserDTO): Promise<any> {
-    const {
-      fullName,
-      email,
-      password,
-      role,
-      projects,
-      manager_id,
-      profileFilename,
-    } = data;
-    if (!password) {
-      throw new Error("Password is required.");
-    }
-    const emailExists = await userRepository.findUserByEmail(email);
-    if (emailExists) {
-      throw new Error("Email already exists.");
-    }
+    // const {
+    //   fullName,
+    //   email,
+    //   password,
+    //   role,
+    //   projects,
+    //   manager_id,
+    //   profileFilename,
+    // } = data;
+    // if (!password) {
+    //   throw new Error("Password is required.");
+    // }
+    // const emailExists = await userRepository.findUserByEmail(email);
+    // if (emailExists) {
+    //   throw new Error("Email already exists.");
+    // }
     try {
-      const hashedPassword = await userRepository.securePassword(password);
-      console.log(projects);
-      const newUser = {
-        fullName: fullName.trim(),
-        email: email.trim(),
-        password: hashedPassword,
-        role: role.toUpperCase(),
-        manager_id: manager_id || null,
-        project_id: projects || null,
-        image: profileFilename
-          ? `${envConfig.BASE_URL}/uploads/${profileFilename}`
-          : null,
-        lastSeenAt: "No login activity recorded",
-      };
-      const createdUser = await userRepository.createUser(newUser);
-      return createdUser;
+      // const hashedPassword = await userRepository.securePassword(password);
+      // console.log(projects);
+      // const newUser = {
+      //   fullName: fullName.trim(),
+      //   email: email.trim(),
+      //   password: hashedPassword,
+      //   role: role.toUpperCase(),
+      //   manager_id: manager_id || null,
+      //   project_id: projects || null,
+      //   image: profileFilename
+      //     ? `${envConfig.BASE_URL}/uploads/${profileFilename}`
+      //     : null,
+      //   lastSeenAt: "No login activity recorded",
+      // };
+      // const createdUser = await userRepository.createUser(newUser);
+      // return createdUser;
     } catch (error: any) {
       console.error("Error creating user:", error);
       throw new Error(error.message || "Failed to create user.");
