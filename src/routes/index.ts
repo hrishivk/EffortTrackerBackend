@@ -14,7 +14,6 @@ export class allMain{
         app.use("/auth-role",authRoute.getRouter())
         app.use("/auth-role-sp",superAdminRoute.getRouter())
         app.use("/auth-role-Am",adminManager.getRouter())
-        app.use("/auth-role-Am",adminManager.getRouter())
         app.use("/user",userRoute.getRouter())
         
     }
