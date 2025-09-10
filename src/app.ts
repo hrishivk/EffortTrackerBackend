@@ -10,7 +10,7 @@ const app: Application = express();
 const server = http.createServer(app);
 
 //database connection
-Database.init()
+// Database.init()
 
 
 expressConfig.configure(app)
