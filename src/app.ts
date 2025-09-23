@@ -9,14 +9,9 @@ import { allMain } from './routes';
 const app: Application = express();
 const server = http.createServer(app);
 
-//database connection
-// Database.init()
-
+ Database.init()
 
 expressConfig.configure(app)
-
-
 allMain.route(app)
-
 const config= new serverConfig(server)
 config.start();

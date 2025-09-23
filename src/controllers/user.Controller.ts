@@ -8,7 +8,6 @@ export class userController {
   public async task(req: Request, res: Response) {
     try {
       const { userId, project, description, priority } = req.body;
-      console.log("iddddddddddddddddddddddddddddddddddddddddddddd",req.body)
       const data = await UserService.addTask({
         userId,
         project,
@@ -55,8 +54,9 @@ export class userController {
 
   public async statusUpdate(req: Request, res: Response) {
     try {
-      const id = parseInt(req.query.id as string, 10);
-      if (isNaN(id)) throw new Error("Invalid ID");
+       console.log(req.query.id)
+      const id = req.query.id as string
+     
       const newStatus = req.body.status;
       const data = await UserService.updateStatus({ id, status: newStatus });
       sendResponse(res, HTTP_statusCode.OK, {
@@ -65,6 +65,7 @@ export class userController {
         data,
       });
     } catch (error: any) {
+      console.log(error)
       const errorStatusMap: Record<string, number> = {
         "Daily log is locked. Cannot update task status.":
           HTTP_statusCode.locked,

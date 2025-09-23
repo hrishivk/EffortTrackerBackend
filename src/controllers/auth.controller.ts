@@ -30,7 +30,6 @@ export class AuthController {
         data,
       });
     } catch (error: any) {
-      console.log(error);
       sendResponse(res, HTTP_statusCode.unAuthorized, {
         success: false,
         message: error.message || "Login failed",
@@ -60,7 +59,6 @@ export class AuthController {
         data,
       });
     } catch (error: any) {
-      console.log(error);
       sendResponse(res, HTTP_statusCode.unAuthorized, {
         success: false,
         message: error.message || "Login failed",

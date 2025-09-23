@@ -78,6 +78,7 @@ return plainUsers;
     try {
       return await User.destroy({ where: { id } });
     } catch (error) {
+      console.log(error)
       throw error;
     }
   }

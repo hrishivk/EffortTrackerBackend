@@ -42,8 +42,9 @@ export class UserRepository {
       throw error;
     }
   }
-  async findTask(id: number) {
-    return await Task.findOne({
+  async findTask(id: string) {
+
+    const data= await Task.findOne({
       where: { id },
       include: [
         {
@@ -52,8 +53,9 @@ export class UserRepository {
         },
       ],
     });
+    return data
   }
-async findCheckTask(daily_log_id: string, date: Date, id: number) {
+async findCheckTask(daily_log_id: string, date: Date, id: string) {
   const startOfDay = new Date(date);
   startOfDay.setHours(0, 0, 0, 0);
 
@@ -269,7 +271,7 @@ public async lockDailyTask(data: any) {
   }
 }
 
-  public async todayTask(id: number) {
+  public async todayTask(id: string) {
     try {
      const data= await Task.findAll({
         where: {

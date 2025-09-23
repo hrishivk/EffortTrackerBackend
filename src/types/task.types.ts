@@ -1,14 +1,14 @@
 import { Task } from "../connection/models/tasks";
 
 export interface TaskStatusUpdate {
-  id: number;
+  id: string;
   status: string;
   DailyTaskLog?:any
 }
 export interface TaskWithDailyLog extends Task {
-  DailyTaskLog?: {
-    locked: boolean;
-  };
+
+    isLocked: boolean;
+
 }
 export interface TaskData{
   date:string |undefined;
