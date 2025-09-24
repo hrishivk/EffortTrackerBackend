@@ -35,6 +35,7 @@ export class userController {
     try {
       const { date, id } = req.query;
       const data = await UserService.listTask({ date, id });
+      console.log(data)
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "fetch task successful",

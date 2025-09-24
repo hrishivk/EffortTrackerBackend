@@ -130,12 +130,13 @@ export class userService {
   }
   public async listTask(data: any): Promise<Task[]> {
     try {
-      console.log(data);
       const { date, id } = data;
       const todayLog = await userRepository.findDailyLogs(date, id);
+      console.log("todayLoggggggggggggggggggggggggggggggg",todayLog)
       if (!todayLog) {
         throw new Error("No task found");
       }
+
 
       return await userRepository.todayTask(todayLog.id);
     } catch (error) {
