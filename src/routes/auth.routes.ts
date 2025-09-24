@@ -1,7 +1,6 @@
 import expres,{ Application,Router  } from "express";
 import { AuthController } from "../controllers/auth.controller";
-import upload from "../middlewares/upload";
-import  { roleGuards } from "../middlewares/verifyRole";
+
 
 
 export class AuthRoute{
@@ -10,7 +9,7 @@ export class AuthRoute{
 
  constructor(){
      this.router.post("/login",this.controller.login)
-     this.router.post('/addUser', upload.single('profile'),this.controller.user)
+     this.router.post('/addUser',this.controller.user)
      this.router.post("/logout",this.controller.logOut)
  }
  public getRouter():Router{

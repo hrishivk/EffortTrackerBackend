@@ -143,7 +143,7 @@ return plainUsers;
   }
   public async editUser(data: AddUserDTO) {
     try {
-      const { id, fullName, email, role, projects, profile, profileFilename } =
+      const { id, fullName, email, role, projects, profileFilename } =
         data;
 
       const user = await User.findByPk(id);
@@ -152,16 +152,11 @@ return plainUsers;
         fullName,
         email,
         role,
-        projects,
-        image: profile
-          ? profile
-          : profileFilename
-          ? `${envConfig.BASE_URL}/uploads/${profileFilename}`
-          : undefined,
+        projects
       };
 
       await user.update(updateLoad);
-      console.log("user", user);
+
       return user;
     } catch (error) {
       throw error;

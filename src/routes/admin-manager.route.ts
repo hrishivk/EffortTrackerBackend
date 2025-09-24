@@ -6,7 +6,7 @@ export class amRoute{
   private controller=new managerController()
  
  constructor(){
-   this.router.get("/list-am-User",roleGuards.Admin,this.controller.listAllUsers)
+   this.router.get("/list-am-User",this.controller.listAllUsers)
  }
  public getRouter():Router{
     return this.router
