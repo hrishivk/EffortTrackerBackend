@@ -1,7 +1,7 @@
 import express, { Router } from "express";
 import { SuperAdminController } from "../controllers/super-admin.controller";
-import { roleGuards } from "../middlewares/verifyRole";
-import upload from "../middlewares/upload";
+
+
 
 export class spRoute {
   private router: Router = express.Router();
@@ -21,7 +21,7 @@ export class spRoute {
     this.router.get("/delete-user",this.controller.deleteUser);
     this.router.patch("/unBlock-user",this.controller.unBlock);
     this.router.patch("/block-user",this.controller.blockUser);
-    this.router.post("/edit-user", upload.single('profile'),this.controller.updateUser);
+    this.router.post("/edit-user", this.controller.updateUser);
   }
 
   public getRouter(): Router {

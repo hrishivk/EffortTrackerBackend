@@ -8,7 +8,6 @@ export interface userAttributes {
   role: string;
   isBlocked: boolean;
   manager_id: string;
-  image: string;
   lastSeenAt?: Date | null |string;
   project_id: string;
   createdAt: Date;
@@ -19,7 +18,6 @@ export interface PublicUser {
   role: string;
   email: string;
   fullName: string;
-  image: string;
   projectName:any;
 }
 export interface AddTask{
@@ -47,8 +45,7 @@ export interface AddUserDTO {
   email: string;
   password?: string;
   role: string;
-  manager_id?: number;
-  profile?:string;
+  manager_id?: string;
   image?:string;
   profileFilename?: string; 
   projects:string
@@ -62,7 +59,6 @@ export type userInput = Optional<
   | "manager_id"
   | "role"
   | "isBlocked"
-  | "image"
   | "lastSeenAt"
   | "project_id"
   | "createdAt"
