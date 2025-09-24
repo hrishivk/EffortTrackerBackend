@@ -69,7 +69,7 @@ export class AuthController {
     try {
       const { fullName, email, password, role, projects, manager_id } =
         req.body;
-      const profileFilename = req.file?.filename;
+
       const data = await UserService.addUser({
         fullName,
         email,
@@ -77,7 +77,6 @@ export class AuthController {
         role,
         projects,
         manager_id,
-        profileFilename,
       });
       sendResponse(res, HTTP_statusCode.CREATED, {
         success: true,

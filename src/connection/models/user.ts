@@ -12,7 +12,6 @@ export class User
   public role!: string;
   public isBlocked!: boolean;
   public manager_id!: string;
-  public image!: string;
   public lastSeenAt?: Date | null | string;
   public project_id!: string;
   public createdAt!: Date;
@@ -46,9 +45,6 @@ export const initUserModel = (sequelize: Sequelize) => {
       },
       manager_id: {
         type: DataTypes.STRING(50),
-      },
-      image: {
-        type: DataTypes.STRING(300),
       },
       lastSeenAt: {
         type: DataTypes.STRING(300),

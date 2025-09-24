@@ -159,7 +159,7 @@ export class SuperAdminController {
   }
   public async blockUser(req:Request,res:Response){
     try {
-      console.log("enterrrrrrrrrrrrrrrrrrrr block")
+
       const {id}=req.query
       const data=await SuperAdminService.BlockUserById(id as string)
       console.log(data)
@@ -179,8 +179,8 @@ export class SuperAdminController {
   public async updateUser(req:Request,res:Response){
     try {
        const profileFilename = req.file?.filename;
-      const {fullName,email,role,projects,profile,id}=req.body
-      const data=await SuperAdminService.updateOneUser({fullName,email,role,projects,profile,profileFilename,id})
+      const {fullName,email,role,projects,id}=req.body
+      const data=await SuperAdminService.updateOneUser({fullName,email,role,projects,id})
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "User edited successfully",

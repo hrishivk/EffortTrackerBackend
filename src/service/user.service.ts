@@ -80,7 +80,6 @@ export class userService {
           role,
           email,
           fullName,
-          image,
           projectName,
         },
         token,
@@ -204,7 +203,6 @@ export class userService {
     }
     try {
       const hashedPassword = await userRepository.securePassword(password);
-      console.log(projects);
       const newUser = {
         fullName: fullName.trim(),
         email: email.trim(),
@@ -212,9 +210,6 @@ export class userService {
         role: role.toUpperCase(),
         manager_id: manager_id || null,
         project_id: projects || null,
-        image: profileFilename
-          ? `${envConfig.BASE_URL}/uploads/${profileFilename}`
-          : null,
         lastSeenAt: "No login activity recorded",
       };
       const createdUser = await userRepository.createUser(newUser);

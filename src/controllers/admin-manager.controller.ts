@@ -9,6 +9,7 @@ export class managerController {
         try {
           const {id}=req.query
           const data=await SuperAdminService.getAllUsers(id as string)
+          console.log(data)
             sendResponse(res, HTTP_statusCode.OK, {
                     success: true,
                     message: "Fetched successful",
