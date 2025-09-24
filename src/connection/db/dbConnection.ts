@@ -29,8 +29,7 @@ export class Database {
         });
 
         await sequelize.authenticate();
-        console.log("✅ Connected successfully");
-
+        console.log(" Connected successfully");
 
         initDomain(sequelize);
         initProjectModel(sequelize);
@@ -38,22 +37,48 @@ export class Database {
         initTaskModel(sequelize);
         initDailyTaskLogModel(sequelize);
 
-        // Setup associations
-        User.belongsTo(Project, { foreignKey: "project_id" });
-        Project.hasMany(User, { foreignKey: "project_id" });
-        Project.belongsTo(Domain, { foreignKey: "domain_id" });
-        Domain.hasMany(Project, { foreignKey: "domain_id" });
-        Task.belongsTo(DailyTaskLog,{foreignKey:" daily_log_id"})
-        DailyTaskLog.hasMany(Task,{foreignKey:" daily_log_id"})
-     
+        User.belongsTo(Project, {
+          foreignKey: "project_id",
+          onDelete: "SET NULL",
+        });
+        Project.hasMany(User, {
+          foreignKey: "project_id",
+          onDelete: "CASCADE",
+        });
 
+        Project.belongsTo(Domain, {
+          foreignKey: "domain_id",
+          onDelete: "CASCADE",
+        });
+        Domain.hasMany(Project, {
+          foreignKey: "domain_id",
+          onDelete: "CASCADE",
+        });
 
-        await sequelize.sync({ alter: true }); 
+        Task.belongsTo(DailyTaskLog, {
+          foreignKey: "daily_log_id",
+          onDelete: "CASCADE",
+        });
+        DailyTaskLog.hasMany(Task, {
+          foreignKey: "daily_log_id",
+          onDelete: "CASCADE",
+        });
+
+        DailyTaskLog.belongsTo(User, {
+          foreignKey: "user_id",
+          onDelete: "CASCADE",
+        });
+        User.hasMany(DailyTaskLog, {
+          foreignKey: "user_id",
+          onDelete: "CASCADE",
+        });
+
+        await sequelize.sync({ alter: true });
 
         Database.instance = sequelize;
       }
     } catch (error: any) {
-      console.error("❌ Unable to connect to the database:", error.message);
+      console.error(" Unable to connect to the database:", error.message);
     }
   }
 
