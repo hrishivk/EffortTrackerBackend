@@ -170,22 +170,23 @@ async findCheckTask(daily_log_id: string, date: Date, id: string) {
       throw error;
     }
   }
-  public async findDailyLogs(date: string, id: string) {
-    try {
-       const rawDate = new Date(date as string);
-    const formattedDate = rawDate.toLocaleDateString("en-CA")
-    console.log(formattedDate)
-      return await DailyTaskLog.findOne({
-        where: {
-          user_id: id,
-          date: formattedDate,
-        },
-      });
-    } catch (error) {
-      throw error;
-    }
+ public async findDailyLogs(date: string, id: string) {
+  try {
+    const rawDate = new Date(date);
+    const formattedDate = rawDate.toISOString().split("T")[0]; 
+    console.log("rawDate", rawDate, formattedDate, id);
+
+    return await DailyTaskLog.findOne({
+      where: {
+        user_id: id,
+        date: formattedDate,
+      },
+    });
+  } catch (error) {
+    throw error;
   }
-  
+}
+
   public async findClosestPreviousLog(date: string, id: string) {
     try {
      return await DailyTaskLog.findOne({where:{
