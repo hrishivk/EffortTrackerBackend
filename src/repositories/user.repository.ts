@@ -13,24 +13,23 @@ const CredentialHashing = new credentialHashing();
 
 export class UserRepository {
   async findUserByEmail(email: string) {
-  try {
-    return await User.findOne({
-      where: { email },
+    try {
+      return await User.findOne({
+        where: { email },
         include: [
           {
             model: Project,
-            include: [{ model: Domain }], 
+            include: [{ model: Domain }],
           },
         ],
-    });
-  } catch (error) {
-    console.error("Error finding user by email:", error);
-    throw error;
+      });
+    } catch (error) {
+      console.error("Error finding user by email:", error);
+      throw error;
+    }
   }
-}
 
-
-   async verifyPassword(
+  async verifyPassword(
     plainpassword: string,
     hashedPassword: string
   ): Promise<boolean> {
@@ -43,8 +42,7 @@ export class UserRepository {
     }
   }
   async findTask(id: string) {
-
-    const data= await Task.findOne({
+    const data = await Task.findOne({
       where: { id },
       include: [
         {
@@ -53,29 +51,29 @@ export class UserRepository {
         },
       ],
     });
-    return data
+    return data;
   }
-async findCheckTask(daily_log_id: string, date: Date, id: string) {
-  const startOfDay = new Date(date);
-  startOfDay.setHours(0, 0, 0, 0);
+  async findCheckTask(daily_log_id: string, date: Date, id: string) {
+    const startOfDay = new Date(date);
+    startOfDay.setHours(0, 0, 0, 0);
 
-  const endOfDay = new Date(date);
-  endOfDay.setHours(23, 59, 59, 999);
+    const endOfDay = new Date(date);
+    endOfDay.setHours(23, 59, 59, 999);
 
-  return await Task.findOne({
-    where: {
-      daily_log_id,
-      created_at: {
-        [Op.between]: [startOfDay, endOfDay],
+    return await Task.findOne({
+      where: {
+        daily_log_id,
+        created_at: {
+          [Op.between]: [startOfDay, endOfDay],
+        },
+        status: "In Progress",
+        id: {
+          [Op.ne]: id,
+        },
       },
-      status: "In Progress",
-      id: {
-        [Op.ne]: id, 
-      },
-    },
-  });
-}
-   async securePassword(password: string) {
+    });
+  }
+  async securePassword(password: string) {
     try {
       const hashPassword = await CredentialHashing.hashPassword(password);
       return hashPassword;
@@ -112,7 +110,6 @@ async findCheckTask(daily_log_id: string, date: Date, id: string) {
 
   public async setUserActive(userId: string) {
     try {
-
       return await User.update({ lastSeenAt: null }, { where: { id: userId } });
     } catch (error) {
       console.error("Error setting user active:", error);
@@ -156,7 +153,7 @@ async findCheckTask(daily_log_id: string, date: Date, id: string) {
       throw error;
     }
   }
-  public async createNewTask(data: AddTask):Promise<Task> {
+  public async createNewTask(data: AddTask): Promise<Task> {
     try {
       const { dailyTaskLog, project, description, priority } = data;
       return await Task.create({
@@ -170,118 +167,126 @@ async findCheckTask(daily_log_id: string, date: Date, id: string) {
       throw error;
     }
   }
- public async findDailyLogs(date: string, id: string) {
-  try {
-    const rawDate = new Date(date);
-    const formattedDate = rawDate.toISOString().split("T")[0]; 
-    console.log("rawDate", rawDate, formattedDate, id);
-
-    return await DailyTaskLog.findOne({
-      where: {
-        user_id: id,
-        date: formattedDate,
-      },
-    });
-  } catch (error) {
-    throw error;
-  }
-}
-
-  public async findClosestPreviousLog(date: string, id: string) {
+  public async findDailyLogs(date: string, id: string) {
     try {
-     return await DailyTaskLog.findOne({where:{
-      user_id: id,
-      date:{
-        [Op.lt]:date
-      },
-     },order:[['date','DESC']]
-    })
+      const datePart = date.split("T")[0];
+
+      const today = new Date();
+      const todayStr = today.toISOString().split("T")[0];
+
+      let rawDate = new Date(datePart);
+      if (datePart !== todayStr) {
+        rawDate.setDate(rawDate.getDate() + 1);
+      }
+
+      const formattedDate = rawDate.toISOString().split("T")[0];
+
+      console.log("formattedDate (with +1 if changed)", formattedDate, id);
+
+      return await DailyTaskLog.findOne({
+        where: {
+          user_id: id,
+          date: formattedDate,
+        },
+      });
     } catch (error) {
       throw error;
     }
   }
-  
-public async lockDailyTask(data: any) {
-  try {
-    const { date, id } = data;
 
-    const parsedDate = new Date(date);
-    if (isNaN(parsedDate.getTime())) {
-      throw new Error('Invalid date input received');
-    }
-
-    const startOfDay = new Date(parsedDate);
-    startOfDay.setUTCHours(0, 0, 0, 0);
-
-    const endOfDay = new Date(parsedDate);
-    endOfDay.setUTCHours(23, 59, 59, 999);
-
-
-    const [_, updatedLogs] = await DailyTaskLog.update(
-      {
-        locked: true,
-        locked_at: new Date(),
-      },
-      {
+  public async findClosestPreviousLog(date: string, id: string) {
+    try {
+      return await DailyTaskLog.findOne({
         where: {
           user_id: id,
-          created_at: {
-            [Op.between]: [startOfDay, endOfDay],
+          date: {
+            [Op.lt]: date,
           },
         },
-        returning: true,
-      }
-    );
-
-
-    const dailyLogIds = updatedLogs.map((log: any) => log.id);
-
-    if (dailyLogIds.length === 0) {
-      return {
-        message: 'No daily task logs found to lock',
-        dailyTaskLog: [],
-        tasks: [],
-      };
+        order: [["date", "DESC"]],
+      });
+    } catch (error) {
+      throw error;
     }
-
-
-    const [__, updatedTasks] = await Task.update(
-      {
-        isLocked: true,
-        updated_at: new Date(),
-      },
-      {
-        where: {
-          daily_log_id: {
-            [Op.in]: dailyLogIds,
-          },
-        },
-        returning: true,
-      }
-    );
-
-    return {
-      message: 'Daily tasks and associated tasks locked successfully',
-      dailyTaskLog: updatedLogs,
-      tasks: updatedTasks,
-    };
-
-  } catch (error) {
-    console.error('lockDailyTask error:', error);
-    throw error;
   }
-}
+
+  public async lockDailyTask(data: any) {
+    try {
+      const { date, id } = data;
+
+      const parsedDate = new Date(date);
+      if (isNaN(parsedDate.getTime())) {
+        throw new Error("Invalid date input received");
+      }
+
+      const startOfDay = new Date(parsedDate);
+      startOfDay.setUTCHours(0, 0, 0, 0);
+
+      const endOfDay = new Date(parsedDate);
+      endOfDay.setUTCHours(23, 59, 59, 999);
+
+      const [_, updatedLogs] = await DailyTaskLog.update(
+        {
+          locked: true,
+          locked_at: new Date(),
+        },
+        {
+          where: {
+            user_id: id,
+            created_at: {
+              [Op.between]: [startOfDay, endOfDay],
+            },
+          },
+          returning: true,
+        }
+      );
+
+      const dailyLogIds = updatedLogs.map((log: any) => log.id);
+
+      if (dailyLogIds.length === 0) {
+        return {
+          message: "No daily task logs found to lock",
+          dailyTaskLog: [],
+          tasks: [],
+        };
+      }
+
+      const [__, updatedTasks] = await Task.update(
+        {
+          isLocked: true,
+          updated_at: new Date(),
+        },
+        {
+          where: {
+            daily_log_id: {
+              [Op.in]: dailyLogIds,
+            },
+          },
+          returning: true,
+        }
+      );
+
+      return {
+        message: "Daily tasks and associated tasks locked successfully",
+        dailyTaskLog: updatedLogs,
+        tasks: updatedTasks,
+      };
+    } catch (error) {
+      console.error("lockDailyTask error:", error);
+      throw error;
+    }
+  }
 
   public async todayTask(id: string) {
     try {
-     const data= await Task.findAll({
+      const data = await Task.findAll({
         where: {
           daily_log_id: id,
         },
         order: [["created_at", "DESC"]],
       });
 
-      return data
+      return data;
     } catch (error) {
       throw error;
     }
