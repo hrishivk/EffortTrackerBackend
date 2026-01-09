@@ -2,9 +2,11 @@ import { Sequelize, Model, DataTypes } from "sequelize";
 
 export class DailyTaskLog extends Model {
   public id!: string;
-  public user_id!: string; // FIX: should be string not number
+  public user_id!: string; 
   public date!: Date;
   public total_time!: string;
+  public created_by!: string;   
+  public assigned_to!: string;  
   public locked!: boolean;
   public locked_at!: Date | null;
   public created_at!: Date;
@@ -19,13 +21,16 @@ export const initDailyTaskLogModel = (sequelize: Sequelize) => {
         type: DataTypes.STRING(20),
         defaultValue: () => generateAlphaNumericValue(15),
       },
-      user_id: {
-        type: DataTypes.STRING(20), 
+
+         created_by: {
+        type: DataTypes.STRING(20),
         allowNull: false,
-        references: {
-          model: "users", 
-          key: "id",
-        },
+        references: { model: "users", key: "id" },
+      },
+      assigned_to: {
+        type: DataTypes.STRING(20),
+        allowNull: false,
+        references: { model: "users", key: "id" },
       },
       date: {
         type: DataTypes.DATEONLY,
@@ -48,7 +53,7 @@ export const initDailyTaskLogModel = (sequelize: Sequelize) => {
       tableName: "daily_task_logs",
       underscored: true,
       sequelize,
-      schema: "public",
+      schema: "tracker",
       timestamps: false,
     }
   );

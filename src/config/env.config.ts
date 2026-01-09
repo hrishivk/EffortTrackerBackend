@@ -15,5 +15,6 @@ export const envConfig:EnvConfig = {
     BASE_URL:process.env.BASE_URL,
     ACCESS_SECRET:process.env.SECRET ,
     REFRESH_SECRET:process.env.REFRESH_SECRET ,
-    production:process.env.PRODUCTION
+    Production:process.env.PRODUCTION
 }
+

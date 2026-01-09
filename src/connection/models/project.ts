@@ -26,6 +26,12 @@ export const initProjectModel = (sequelize: Sequelize) => {
       domain_id: {
         type: DataTypes.STRING(20),
         allowNull: false,
+        references: {
+          model: "domains",
+          key: "id",
+        },
+        onDelete: "CASCADE",
+        onUpdate: "CASCADE",
       },
 
       name: {
@@ -45,7 +51,7 @@ export const initProjectModel = (sequelize: Sequelize) => {
       tableName: "projects",
       underscored: true,
       sequelize,
-      schema: "public",
+      schema: "tracker",
       timestamps: true,
       createdAt: "createdAt",
       updatedAt: "updatedAt",

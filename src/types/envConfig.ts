@@ -11,5 +11,5 @@ export interface EnvConfig {
   BASE_URL?: string;
   ACCESS_SECRET?: string;      
   REFRESH_SECRET?: string;      
-  production?: string;
+  Production?: string;
 }

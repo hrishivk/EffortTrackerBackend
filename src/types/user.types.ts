@@ -8,7 +8,7 @@ export interface userAttributes {
   role: string;
   isBlocked: boolean;
   manager_id: string;
-  lastSeenAt?: Date | null |string;
+  lastSeenAt?: Date | null | string;
   project_id: string;
   createdAt: Date;
   updatedAt: Date;
@@ -18,37 +18,38 @@ export interface PublicUser {
   role: string;
   email: string;
   fullName: string;
-  projectName:any;
+  projectName: any;
 }
-export interface AddTask{
-  dailyTaskLog?:any;
-  userId:string;
-  project:string;
-  description:string;
-  priority:string;
-  status?:string;
-  created_at?:Date;
-  updated_at?:Date;
-   daily_log_id?:number
+export interface AddTask {
+  dailyTaskLog?: any;
+  created_by?: string;
+  assigned_to?: string;
+  project: string;
+  description: string;
+  priority: string;
+  status?: string;
+  created_at?: Date;
+  updated_at?: Date;
+  daily_log_id?: number;
 }
-export interface tokenResponse{
-    accessToken: string;        
-    refreshToken: string; 
+export interface tokenResponse {
+  accessToken: string;
+  refreshToken: string;
 }
 export interface LoginResponse {
   user: PublicUser;
-  token: tokenResponse
+  token: tokenResponse;
 }
 export interface AddUserDTO {
-  id?:string;
+  id?: string;
   fullName: string;
   email: string;
   password?: string;
   role: string;
   manager_id?: string;
-  image?:string;
-  profileFilename?: string; 
-  projects:string
+  image?: string;
+  profileFilename?: string;
+  projects: string;
 }
 export type userInput = Optional<
   userAttributes,

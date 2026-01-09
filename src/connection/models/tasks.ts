@@ -2,13 +2,13 @@ import { Sequelize, Model, DataTypes } from "sequelize";
 
 export class Task extends Model {
   public id!: string;
-  public daily_log_id!: number;
+  public daily_log_id!: string | null;
   public project!: string;
   public description!: string;
   public priority!: "Low" | "Medium" | "High";
-  public start_time!: Date;
-  public end_time!: Date;
-  public total_time!: string;
+  public start_time!: Date | null;
+  public end_time!: Date | null;
+  public total_time!: string | null;
   public status!: "yet to start" | "In Progress" | "Completed";
   public isLocked!: boolean;
   public created_at!: Date;
@@ -26,10 +26,11 @@ export const initTaskModel = (sequelize: Sequelize) => {
       },
       daily_log_id: {
         type: DataTypes.STRING(20),
-        references:{
-          model:"daily_task_logs",
-          key:"id"
-        }
+        allowNull: true,
+        references: {
+          model: "daily_task_logs",
+          key: "id",
+        },
       },
       project: {
         type: DataTypes.STRING(255),
@@ -50,12 +51,10 @@ export const initTaskModel = (sequelize: Sequelize) => {
       },
       status: {
         type: DataTypes.ENUM("yet to start", "In Progress", "Completed"),
-        allowNull: true,
         defaultValue: "yet to start",
       },
       isLocked: {
         type: DataTypes.BOOLEAN,
-        allowNull: false,
         defaultValue: false,
       },
       created_at: {
@@ -71,7 +70,7 @@ export const initTaskModel = (sequelize: Sequelize) => {
       tableName: "tasks",
       underscored: true,
       sequelize,
-      schema: "public",
+      schema: "tracker",
       timestamps: false,
     }
   );

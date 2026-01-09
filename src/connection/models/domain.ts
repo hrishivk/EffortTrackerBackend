@@ -34,7 +34,7 @@ export const initDomain = (sequelize: Sequelize) => {
       tableName: "domains",
       underscored: true,
       sequelize,
-      schema: "public",
+      schema: "tracker",
       timestamps: true,
       createdAt: "created_at",
       updatedAt: "updated_at",

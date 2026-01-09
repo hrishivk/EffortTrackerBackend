@@ -1,14 +1,13 @@
 import { UserRepository } from "../repositories/user.repository";
 import {
   AddTask,
-  AddUserDTO,
   LoginResponse,
-  PublicUser,
 } from "../types/user.types";
-import { envConfig } from "../config/env.config";
+
 
 import { TaskStatusUpdate, TaskWithDailyLog } from "../types/task.types";
 import { Task } from "../connection/models/tasks";
+import { DailyTaskLog } from "../connection/models/daily_task_logs";
 const userRepository = new UserRepository();
 
 export class userService {
@@ -22,48 +21,38 @@ export class userService {
       if (user.dataValues.isBlocked) {
         throw new Error("Your account has been blocked ");
       }
-
       const isValid = await userRepository.verifyPassword(
         password,
         user.dataValues.password
       );
-
       if (!isValid) {
         throw new Error("Invalid Password");
       }
       let projectName = (user as any).Project?.name ?? null;
       await userRepository.setUserActive(user.id as string);
       const { id, role, email: userEmail, fullName, image } = user.dataValues;
-
       const token = await userRepository.secureToken(user.email, role);
-
       const today = new Date();
       const formattedToday = today.toISOString().split("T")[0];
-
-      let todayLog = await userRepository.findDailyLogs(formattedToday, id);
-
-      if (!todayLog) {
+       let todayLogs = await userRepository.findDailyLogs(formattedToday, id);
+      let todayLog: DailyTaskLog| null = todayLogs.length > 0 ? todayLogs[0] : null;
+      if (!todayLog )  {
         const previousLog = await userRepository.findClosestPreviousLog(
           formattedToday,
           id
-        );
-
-        if (previousLog) {
-          const previousTasks = await userRepository.todayTask(previousLog.id);
-
+        )   
+        if (previousLog ) {       
+          const previousTasks = await userRepository.todayTask(previousLog.id)
           const carryOverTasks = previousTasks.filter((task: any) => {
             const status = task.dataValues.status?.toLowerCase().trim();
             return status === "in progress" || status === "yet to start";
           });
-
           if (carryOverTasks.length > 0) {
-            todayLog = await userRepository.createDailyTaskLog(
-              id,
-              formattedToday
-            );
+              const today = new Date();
+                const formattedToday = today.toISOString().split("T")[0]; 
+             todayLog=await userRepository.createDailyTaskLog( undefined,id,formattedToday);
             for (const task of carryOverTasks) {
               await userRepository.createNewTask({
-                userId: id,
                 dailyTaskLog: todayLog,
                 project: task.project,
                 description: task.description,
@@ -73,7 +62,6 @@ export class userService {
           }
         }
       }
-
       return {
         user: {
           id,
@@ -85,6 +73,7 @@ export class userService {
         token,
       };
     } catch (error: any) {
+      console.log(error)
       throw new Error(error.message || "Login failed");
     }
   }
@@ -98,17 +87,18 @@ export class userService {
   }
   public async addTask(data: AddTask): Promise<Task> {
     try {
-      const { userId, project, description, priority } = data;
+      const { created_by, assigned_to, project, description, priority } = data;
       const dailytaskTime = new Date().toISOString().split("T")[0];
-
       let dailyTaskLog = await userRepository.findDailyTaskLog(
         dailytaskTime,
-        userId
+        created_by,
+        assigned_to
       );
 
       if (!dailyTaskLog) {
         dailyTaskLog = await userRepository.createDailyTaskLog(
-          userId,
+          created_by,
+          assigned_to,
           dailytaskTime
         );
       }
@@ -116,7 +106,8 @@ export class userService {
         throw new Error("Daily log is locked. Cannot add new task.");
       }
       const newTask = await userRepository.createNewTask({
-        userId,
+        created_by,
+        assigned_to,
         dailyTaskLog,
         project,
         description,
@@ -130,15 +121,13 @@ export class userService {
   }
   public async listTask(data: any): Promise<Task[]> {
     try {
-      const { date, id } = data;
-      const todayLog = await userRepository.findDailyLogs(date, id);
-      console.log("todayLoggggggggggggggggggggggggggggggg",todayLog)
+      const { date, id, role } = data;
+      const todayLog = await userRepository.findDailyLogs(date, id, role);
       if (!todayLog) {
         throw new Error("No task found");
       }
-
-
-      return await userRepository.todayTask(todayLog.id);
+      const logIds = todayLog.map((log: any) => log.id);
+      return await userRepository.todayTask(logIds);
     } catch (error) {
       console.error("Error in listTask:", error);
       throw error;
@@ -165,7 +154,7 @@ export class userService {
       const todayDate = new Date();
       const task = (await userRepository.findTask(id)) as TaskWithDailyLog;
       if (!task) throw new Error("Task not found");
-      console.log(task)
+      console.log(task);
       if (task.isLocked) {
         throw new Error("Daily log is locked. Cannot update task status.");
       }
@@ -182,42 +171,6 @@ export class userService {
     } catch (error) {
       console.error("Error in updateStatus:", error);
       throw error;
-    }
-  }
-
-  public async addUser(data: AddUserDTO): Promise<any> {
-    const {
-      fullName,
-      email,
-      password,
-      role,
-      projects,
-      manager_id,
-      profileFilename,
-    } = data;
-    if (!password) {
-      throw new Error("Password is required.");
-    }
-    const emailExists = await userRepository.findUserByEmail(email);
-    if (emailExists) {
-      throw new Error("Email already exists.");
-    }
-    try {
-      const hashedPassword = await userRepository.securePassword(password);
-      const newUser = {
-        fullName: fullName.trim(),
-        email: email.trim(),
-        password: hashedPassword,
-        role: role.toUpperCase(),
-        manager_id: manager_id || null,
-        project_id: projects || null,
-        lastSeenAt: "No login activity recorded",
-      };
-      const createdUser = await userRepository.createUser(newUser);
-      return createdUser;
-    } catch (error: any) {
-      console.error("Error creating user:", error);
-      throw new Error(error.message || "Failed to create user.");
     }
   }
 }

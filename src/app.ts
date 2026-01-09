@@ -1,17 +1,14 @@
-import express,{Application} from 'express';
-import {Database } from './connection/db/dbConnection'
-import http from 'http';
-import { serverConfig } from './config/server';
-import { expressConfig } from './config/express.config';
-import { allMain } from './routes';
-
+import express, { Application } from "express";
+import { Database } from "./connection/db/dbConnection";
+import http from "http";
+import { serverConfig } from "./config/server";
+import { expressConfig } from "./config/express.config";
+import { allMain } from "./routes/index.route";
 
 const app: Application = express();
 const server = http.createServer(app);
-
- Database.init()
-
-expressConfig.configure(app)
-allMain.route(app)
-const config= new serverConfig(server)
+Database.init();
+expressConfig.configure(app);
+allMain.route(app);
+const config = new serverConfig(server);
 config.start();

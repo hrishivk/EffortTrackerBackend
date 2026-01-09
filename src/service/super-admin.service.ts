@@ -6,6 +6,40 @@ import { UserRepository } from "../repositories/user.repository";
 const SuperAdminRepository = new superAdminRepository();
 const userRepository = new UserRepository();
 export class superAdminService {
+    public async addUser(data: AddUserDTO): Promise<any> {
+    const {
+      fullName,
+      email,
+      password,
+      role,
+      projects,
+      manager_id,
+    } = data;
+    if (!password) {
+      throw new Error("Password is required.");
+    }
+    const emailExists = await userRepository.findUserByEmail(email);
+    if (emailExists) {
+      throw new Error("Email already exists.");
+    }
+    try {
+      const hashedPassword = await userRepository.securePassword(password);
+      const newUser = {
+        fullName: fullName.trim(),
+        email: email.trim(),
+        password: hashedPassword,
+        role: role.toUpperCase(),
+        manager_id: manager_id || null,
+        project_id: projects || null,
+        lastSeenAt: "No login activity recorded",
+      };
+      const createdUser = await userRepository.createUser(newUser);
+      return createdUser;
+    } catch (error: any) {
+      console.error("Error creating user:", error);
+      throw new Error(error.message || "Failed to create user.");
+    }
+  }
   public async addDomain(data: { name: string; description: string }) {
     try {
      const {name,description}=data

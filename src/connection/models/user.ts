@@ -68,7 +68,7 @@ export const initUserModel = (sequelize: Sequelize) => {
       tableName: "users",
       underscored: true,
       sequelize,
-      schema: "public",
+      schema: "tracker",
       timestamps: true,
       createdAt: "createdAt",
       updatedAt: "updatedAt",

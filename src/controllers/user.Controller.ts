@@ -7,9 +7,11 @@ const UserService = new userService();
 export class userController {
   public async task(req: Request, res: Response) {
     try {
-      const { userId, project, description, priority } = req.body;
+      console.log(req.body)
+      const { created_by,assigned_to, project, description, priority } = req.body;
       const data = await UserService.addTask({
-        userId,
+        created_by,
+        assigned_to,
         project,
         description,
         priority,
@@ -33,9 +35,8 @@ export class userController {
   }
   public async taskList(req: Request, res: Response) {
     try {
-      const { date, id } = req.query;
-      const data = await UserService.listTask({ date, id });
-      console.log(data)
+      const { date, id ,role} = req.query;
+      const data = await UserService.listTask({ date, id,role});
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "fetch task successful",

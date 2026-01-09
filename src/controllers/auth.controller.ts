@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import { userService } from "../service/user.service";
 import HTTP_statusCode from "../Enums/statuCode";
 import { sendResponse } from "../utils/sendResponse";
+import { envConfig } from "../config/env.config";
 
 const UserService = new userService();
 
@@ -12,14 +13,14 @@ export class AuthController {
       const data = await UserService.login(email, password);
       res.cookie("rhythmrx_auth", data.token?.accessToken, {
         httpOnly: true,
-        secure: false,
+        secure: envConfig.Production=="Production",
         maxAge: 5 * 60 * 1000,
         sameSite: "strict",
         path: "/",
       });
       res.cookie("rhythmrx_refresh_auth", data.token?.refreshToken, {
         httpOnly: true,
-        secure: false,
+        secure: envConfig.Production=="Production",
         maxAge: 7 * 24 * 60 * 60 * 1000,
         sameSite: "strict",
         path: "/",
@@ -65,32 +66,5 @@ export class AuthController {
       });
     }
   }
-  public async user(req: Request, res: Response) {
-    try {
-      const { fullName, email, password, role, projects, manager_id } =
-        req.body;
 
-      const data = await UserService.addUser({
-        fullName,
-        email,
-        password,
-        role,
-        projects,
-        manager_id,
-      });
-      sendResponse(res, HTTP_statusCode.CREATED, {
-        success: true,
-        message: "User created successfully",
-        data,
-      });
-    } catch (error: any) {
-      if (error.message === "Email already exists.") {
-        console.log("enter error", error.message);
-        sendResponse(res, HTTP_statusCode.Conflict, {
-          success: false,
-          message: error.message || "user creation failed",
-        });
-      }
-    }
-  }
 }

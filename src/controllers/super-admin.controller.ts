@@ -6,6 +6,34 @@ import { superAdminService } from "../service/super-admin.service";
 
 const SuperAdminService = new superAdminService();
 export class SuperAdminController {
+    public async user(req: Request, res: Response) {
+    try {
+      const { fullName, email, password, role, projects, manager_id } =
+        req.body;
+
+      const data = await SuperAdminService.addUser({
+        fullName,
+        email,
+        password,
+        role,
+        projects,
+        manager_id,
+      });
+      sendResponse(res, HTTP_statusCode.CREATED, {
+        success: true,
+        message: "User created successfully",
+        data,
+      });
+    } catch (error: any) {
+      if (error.message === "Email already exists.") {
+        console.log("enter error", error.message);
+        sendResponse(res, HTTP_statusCode.Conflict, {
+          success: false,
+          message: error.message || "user creation failed",
+        });
+      }
+    }
+  }
   public async createDomain(req: Request, res: Response) {
     try {
       const { name, description } = req.body;
@@ -57,7 +85,7 @@ export class SuperAdminController {
   public async createProject(req:Request,res:Response){
     try {
       const {domain,name,description}=req.body
-      console.log('domain',domain)
+      console.log('domain',domain,name,description)
       const data= await SuperAdminService.addProject({domain,name,description})
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
@@ -133,6 +161,7 @@ export class SuperAdminController {
         data,
       });
     } catch (error:any) {
+      console.log(error)
     sendResponse(res, HTTP_statusCode.unAuthorized, {
         success: false,
         message: error.message || "Fetching user failed",

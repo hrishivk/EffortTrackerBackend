@@ -8,9 +8,7 @@ import { TaskStatus } from "../types/task.types";
 import { Model, Op } from "sequelize";
 import { Project } from "../connection/models/project";
 import { Domain } from "../connection/models/domain";
-
 const CredentialHashing = new credentialHashing();
-
 export class UserRepository {
   async findUserByEmail(email: string) {
     try {
@@ -35,6 +33,7 @@ export class UserRepository {
   ): Promise<boolean> {
     try {
       const isMatch = await bcrypt.compare(plainpassword, hashedPassword);
+      console.log(isMatch)
       return isMatch;
     } catch (error) {
       console.error("Error verifying password:", error);
@@ -107,7 +106,6 @@ export class UserRepository {
       throw error;
     }
   }
-
   public async setUserActive(userId: string) {
     try {
       return await User.update({ lastSeenAt: null }, { where: { id: userId } });
@@ -128,11 +126,12 @@ export class UserRepository {
       throw error;
     }
   }
-  public async findDailyTaskLog(dailytaskTime: string, userId: string) {
+  public async findDailyTaskLog(dailytaskTime: string, created_by: string |undefined,assigned_to:string |undefined) {
     try {
       return await DailyTaskLog.findOne({
         where: {
-          user_id: userId,
+          created_by: created_by,
+          assigned_to:assigned_to,
           date: dailytaskTime,
         },
       });
@@ -141,13 +140,17 @@ export class UserRepository {
       throw error;
     }
   }
-  public async createDailyTaskLog(userId: string, dailytaskTime: string) {
+  public async createDailyTaskLog( created_by?: string,assigned_to?:string,dailytaskTime?:string) {
     try {
-      return await DailyTaskLog.create({
-        user_id: userId,
+      console.log(created_by,assigned_to,dailytaskTime)
+      const data= await DailyTaskLog.create({
+        created_by: created_by ?? assigned_to,
+        assigned_to:assigned_to,
         date: dailytaskTime,
         total_time: "0",
       });
+      console.log("data",data)
+      return data
     } catch (error) {
       console.log(error);
       throw error;
@@ -167,38 +170,44 @@ export class UserRepository {
       throw error;
     }
   }
-  public async findDailyLogs(date: string, id: string) {
+  public async findDailyLogs(date: string, id: string,role?:string) {
     try {
       const datePart = date.split("T")[0];
-
       const today = new Date();
       const todayStr = today.toISOString().split("T")[0];
-
       let rawDate = new Date(datePart);
       if (datePart !== todayStr) {
         rawDate.setDate(rawDate.getDate() + 1);
       }
-
       const formattedDate = rawDate.toISOString().split("T")[0];
-
-      console.log("formattedDate (with +1 if changed)", formattedDate, id);
-
-      return await DailyTaskLog.findOne({
+      if(role=="SP"){
+        return  await DailyTaskLog.findAll({
         where: {
-          user_id: id,
+          created_by: "2f3xfkSN5zHdYa5",
+          assigned_to: id,
           date: formattedDate,
         },
       });
+      }else{
+        console.log("enterrrr",id)
+         return await DailyTaskLog.findAll({
+        where: {
+          // created_by:id,
+          assigned_to: id,
+          date: formattedDate,
+        },
+      });
+      }
+    
     } catch (error) {
       throw error;
     }
   }
-
   public async findClosestPreviousLog(date: string, id: string) {
     try {
-      return await DailyTaskLog.findOne({
+      return await DailyTaskLog.findAll({
         where: {
-          user_id: id,
+          assigned_to: id,
           date: {
             [Op.lt]: date,
           },
@@ -277,20 +286,23 @@ export class UserRepository {
     }
   }
 
-  public async todayTask(id: string) {
-    try {
-      const data = await Task.findAll({
-        where: {
-          daily_log_id: id,
+ public async todayTask(ids: string[] |string): Promise<Task[]> {
+  try {
+   const idArray = Array.isArray(ids) ? ids : [ids]; 
+    let data = await Task.findAll({
+      where: {
+        daily_log_id: {
+          [Op.in]: idArray,   
         },
-        order: [["created_at", "DESC"]],
-      });
+      },
+      order: [["created_at", "DESC"]],
+    });
 
-      return data;
-    } catch (error) {
-      throw error;
-    }
+    return data;
+  } catch (error) {
+    throw error;
   }
+}
   public async updateTaskStatus(task: Task, newStatus?: string): Promise<Task> {
     try {
       if (!newStatus) {
