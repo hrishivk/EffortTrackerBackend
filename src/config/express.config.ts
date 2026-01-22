@@ -6,7 +6,7 @@ import cookieParser from "cookie-parser";
 export class expressConfig {
   static configure(app: Application): void {
      const corsConfig = {
-        origin: 'https://effort-tracker-frontend-ztwy.vercel.app', 
+        origin: 'https://effort-tracker-frontend-fe.vercel.app', 
         credentials: true, 
     }
     app.use(cors(corsConfig))
