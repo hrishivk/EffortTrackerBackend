@@ -10,7 +10,7 @@ const JWT_REfresh_SECRET = envConfig.REFRESH_SECRET as string;
 const CredentialHashing = new credentialHashing();
 declare module "express-serve-static-core" {
   interface Request {
-    user?: JwtPayload & { email: string; role: Role };
+    user?: JwtPayload & { id: string; email: string; role: Role };
   }
 }
 const authorize = (allowedRoles: Role[]) => {
@@ -20,16 +20,18 @@ const authorize = (allowedRoles: Role[]) => {
       if (!token) {
         const refreshToken = req.cookies.rhythmrx_refresh_auth;
         if (!refreshToken) {
-           res.status(HTTP_statusCode.unAuthorized).json({
+           return res.status(HTTP_statusCode.unAuthorized).json({
             error: "Authentication refresh token missing",
           });
         }
         const refreshDecoded = jwt.verify( refreshToken,JWT_REfresh_SECRET) as JwtPayload;
         const user = {
+          id: refreshDecoded.id,
           email: refreshDecoded.email,
           role: refreshDecoded.role,
         };
         const newAccessToken = await CredentialHashing.newHashtoken(
+          user.id,
           user.email,
           user.role
         );
@@ -42,9 +44,8 @@ const authorize = (allowedRoles: Role[]) => {
         });
         token = newAccessToken.accessToken;
       }
-      
-      const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;
 
+      const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;
 
       const role = decoded.role as Role;
       if (!allowedRoles.includes(role)) {
@@ -53,6 +54,7 @@ const authorize = (allowedRoles: Role[]) => {
         });
       }
       req.user = {
+        id: decoded.id,
         email: decoded.email,
         role: decoded.role,
         iat: decoded.iat,

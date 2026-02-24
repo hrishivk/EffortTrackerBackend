@@ -3,15 +3,13 @@ import { Task } from "../connection/models/tasks";
 export interface TaskStatusUpdate {
   id: string;
   status: string;
-  DailyTaskLog?:any
+  DailyTaskLog?: any;
 }
 export interface TaskWithDailyLog extends Task {
-
-    isLocked: boolean;
-
+  isLocked: boolean;
 }
-export interface TaskData{
-  date:string |undefined;
-  id:string |undefined
+export interface TaskData {
+  date: string | undefined;
+  id: string | undefined;
 }
-export type  TaskStatus = 'yet to start' | 'In Progress' | 'Completed';
+export type TaskStatus = "yet_to_start" | "in_progress" | "completed" | "blocked";

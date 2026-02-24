@@ -1,14 +1,25 @@
 import express, { Application } from "express";
-import { Database } from "./connection/db/dbConnection";
 import http from "http";
-import { serverConfig } from "./config/server";
-import { expressConfig } from "./config/express.config";
-import { allMain } from "./routes/index.route";
+import { Database } from "./connection/db/dbConnection";
 
-const app: Application = express();
-const server = http.createServer(app);
-Database.init();
-expressConfig.configure(app);
-allMain.route(app);
-const config = new serverConfig(server);
-config.start();
+import { envConfig } from "./config/env.config";
+import { configureExpress } from "./config/express.config";
+import { registerRoutes } from "./routes/index.route";
+
+async function bootstrap(): Promise<void> {
+  await Database.init();
+
+  const app: Application = express();
+  configureExpress(app);
+  registerRoutes(app);
+
+  const server = http.createServer(app);
+  server.listen(envConfig.port, () => {
+  console.log(`Server is running on port ${envConfig.port}`);
+  });
+}
+
+bootstrap().catch((err) => {
+  console.error("Failed to start application:", err);
+  process.exit(1);
+});

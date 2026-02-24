@@ -12,9 +12,9 @@ export class credentialHashing {
       throw error;
     }
   }
- public async newHashtoken(email: string,role: string): Promise<{ accessToken: string}> {
+ public async newHashtoken(id: string, email: string, role: string): Promise<{ accessToken: string}> {
     try {
-      const payload = { email, role };
+      const payload = { id, email, role };
         const secret = envConfig.ACCESS_SECRET
         ? envConfig.ACCESS_SECRET
         : (() => {
@@ -30,11 +30,12 @@ export class credentialHashing {
     }
   }
   public async hashtoken(
+    id: string,
     email: string,
     role: string
   ): Promise<{ accessToken: string; refreshToken: string }> {
     try {
-      const payload = { email, role };
+      const payload = { id, email, role };
       const secret = envConfig.ACCESS_SECRET
         ? envConfig.ACCESS_SECRET
         : (() => {

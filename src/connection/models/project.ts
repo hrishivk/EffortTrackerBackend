@@ -8,8 +8,15 @@ export class Project
 {
   public id!: string;
   public domain_id!: string;
+  public created_by!: string | null;
   public name!: string;
   public description!: string;
+  public project_category!: string | null;
+  public client_department!: string | null;
+  public start_date!: Date | null;
+  public end_date!: Date | null;
+  public status!: "active" | "on_hold" | "paused" | "completed";
+  public progress!: number;
   public createdAt!: Date;
   public updatedAt!: Date;
 }
@@ -33,12 +40,48 @@ export const initProjectModel = (sequelize: Sequelize) => {
         onDelete: "CASCADE",
         onUpdate: "CASCADE",
       },
-
+      created_by: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+        references: {
+          model: "users",
+          key: "id",
+        },
+        onDelete: "SET NULL",
+      },
       name: {
         type: DataTypes.STRING(200),
       },
       description: {
         type: DataTypes.STRING(1000),
+      },
+      project_category: {
+        type: DataTypes.STRING(100),
+        allowNull: true,
+      },
+      client_department: {
+        type: DataTypes.STRING(200),
+        allowNull: true,
+      },
+      start_date: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
+      end_date: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
+      status: {
+        type: DataTypes.ENUM("active", "on_hold", "paused", "completed"),
+        defaultValue: "active",
+      },
+      progress: {
+        type: DataTypes.INTEGER,
+        defaultValue: 0,
+        validate: {
+          min: 0,
+          max: 100,
+        },
       },
       createdAt: {
         type: DataTypes.DATE,

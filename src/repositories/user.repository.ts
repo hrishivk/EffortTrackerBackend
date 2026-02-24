@@ -8,6 +8,8 @@ import { TaskStatus } from "../types/task.types";
 import { Model, Op } from "sequelize";
 import { Project } from "../connection/models/project";
 import { Domain } from "../connection/models/domain";
+import { ProjectMember } from "../connection/models/project_member";
+
 const CredentialHashing = new credentialHashing();
 export class UserRepository {
   async findUserByEmail(email: string) {
@@ -17,7 +19,9 @@ export class UserRepository {
         include: [
           {
             model: Project,
-            include: [{ model: Domain }],
+            as: "projects",
+            through: { attributes: ["role"] },
+            include: [{ model: Domain, as: "domain" }],
           },
         ],
       });
@@ -33,7 +37,6 @@ export class UserRepository {
   ): Promise<boolean> {
     try {
       const isMatch = await bcrypt.compare(plainpassword, hashedPassword);
-      console.log(isMatch)
       return isMatch;
     } catch (error) {
       console.error("Error verifying password:", error);
@@ -46,6 +49,7 @@ export class UserRepository {
       include: [
         {
           model: DailyTaskLog,
+          as: "dailyLog",
           attributes: ["locked"],
         },
       ],
@@ -65,7 +69,7 @@ export class UserRepository {
         created_at: {
           [Op.between]: [startOfDay, endOfDay],
         },
-        status: "In Progress",
+        status: "in_progress",
         id: {
           [Op.ne]: id,
         },
@@ -82,9 +86,9 @@ export class UserRepository {
     }
   }
 
-  public async secureToken(email: string, role: string) {
+  public async secureToken(id: string, email: string, role: string) {
     try {
-      const token = await CredentialHashing.hashtoken(email, role);
+      const token = await CredentialHashing.hashtoken(id, email, role);
       const hashToken = token
         ? token
         : (() => {
@@ -126,12 +130,12 @@ export class UserRepository {
       throw error;
     }
   }
-  public async findDailyTaskLog(dailytaskTime: string, created_by: string |undefined,assigned_to:string |undefined) {
+  public async findDailyTaskLog(dailytaskTime: string, created_by: string | undefined, assigned_to: string | undefined) {
     try {
       return await DailyTaskLog.findOne({
         where: {
           created_by: created_by,
-          assigned_to:assigned_to,
+          assigned_to: assigned_to,
           date: dailytaskTime,
         },
       });
@@ -140,17 +144,16 @@ export class UserRepository {
       throw error;
     }
   }
-  public async createDailyTaskLog( created_by?: string,assigned_to?:string,dailytaskTime?:string) {
+  public async createDailyTaskLog(created_by?: string, assigned_to?: string, dailytaskTime?: string, project_id?: string) {
     try {
-      console.log(created_by,assigned_to,dailytaskTime)
-      const data= await DailyTaskLog.create({
+      const data = await DailyTaskLog.create({
         created_by: created_by ?? assigned_to,
-        assigned_to:assigned_to,
+        assigned_to: assigned_to,
         date: dailytaskTime,
+        project_id: project_id || null,
         total_time: "0",
       });
-      console.log("data",data)
-      return data
+      return data;
     } catch (error) {
       console.log(error);
       throw error;
@@ -158,19 +161,22 @@ export class UserRepository {
   }
   public async createNewTask(data: AddTask): Promise<Task> {
     try {
-      const { dailyTaskLog, project, description, priority } = data;
-      return await Task.create({
+      const { dailyTaskLog, project_id, description, priority, end_time, status } = data;
+      const taskData: any = {
         daily_log_id: dailyTaskLog.id,
-        project: project,
+        project_id: project_id,
         description: description,
         priority: priority,
-      });
+      };
+      if (end_time) taskData.end_time = new Date(end_time);
+      if (status) taskData.status = status;
+      return await Task.create(taskData);
     } catch (error) {
       console.log(error);
       throw error;
     }
   }
-  public async findDailyLogs(date: string, id: string,role?:string) {
+  public async findDailyLogs(date: string, id: string, role?: string, assigned_to?: string) {
     try {
       const datePart = date.split("T")[0];
       const today = new Date();
@@ -180,25 +186,61 @@ export class UserRepository {
         rawDate.setDate(rawDate.getDate() + 1);
       }
       const formattedDate = rawDate.toISOString().split("T")[0];
-      if(role=="SP"){
-        return  await DailyTaskLog.findAll({
-        where: {
-          created_by: "2f3xfkSN5zHdYa5",
-          assigned_to: id,
-          date: formattedDate,
-        },
-      });
-      }else{
-        console.log("enterrrr",id)
-         return await DailyTaskLog.findAll({
-        where: {
-          // created_by:id,
-          assigned_to: id,
-          date: formattedDate,
-        },
-      });
+      if (role == "SP") {
+        // If assigned_to filter is provided, show that specific user's tasks
+        if (assigned_to) {
+          return await DailyTaskLog.findAll({
+            where: {
+              assigned_to: assigned_to,
+              date: formattedDate,
+            },
+          });
+        }
+        // SP sees all tasks
+        return await DailyTaskLog.findAll({
+          where: {
+            date: formattedDate,
+          },
+        });
+      } else if (role == "AM") {
+        // If assigned_to filter is provided, show that specific user's tasks
+        if (assigned_to) {
+          return await DailyTaskLog.findAll({
+            where: {
+              assigned_to: assigned_to,
+              date: formattedDate,
+            },
+          });
+        }
+        // Get all users/developers managed by this AM
+        const managedUsers = await User.findAll({
+          where: { manager_id: id },
+          attributes: ["id"],
+        });
+        const managedUserIds = managedUsers.map((u: any) => u.id);
+        // AM sees: tasks they created OR assigned to them OR assigned to their team members
+        return await DailyTaskLog.findAll({
+          where: {
+            [Op.or]: [
+              { created_by: id },
+              { assigned_to: id },
+              ...(managedUserIds.length > 0 ? [{ assigned_to: { [Op.in]: managedUserIds } }] : []),
+            ],
+            date: formattedDate,
+          },
+        });
+      } else {
+        // USER/DEVELOPER: tasks assigned to them or created by them
+        return await DailyTaskLog.findAll({
+          where: {
+            [Op.or]: [
+              { assigned_to: id },
+              { created_by: id },
+            ],
+            date: formattedDate,
+          },
+        });
       }
-    
     } catch (error) {
       throw error;
     }
@@ -241,7 +283,7 @@ export class UserRepository {
         },
         {
           where: {
-            user_id: id,
+            assigned_to: id,
             created_at: {
               [Op.between]: [startOfDay, endOfDay],
             },
@@ -286,30 +328,58 @@ export class UserRepository {
     }
   }
 
- public async todayTask(ids: string[] |string): Promise<Task[]> {
-  try {
-   const idArray = Array.isArray(ids) ? ids : [ids]; 
-    let data = await Task.findAll({
-      where: {
+  public async todayTask(ids: string[] | string, projectId?: string): Promise<Task[]> {
+    try {
+      const idArray = Array.isArray(ids) ? ids : [ids];
+      const whereClause: any = {
         daily_log_id: {
-          [Op.in]: idArray,   
+          [Op.in]: idArray,
         },
-      },
-      order: [["created_at", "DESC"]],
-    });
+      };
+      if (projectId) {
+        whereClause.project_id = projectId;
+      }
+      let data = await Task.findAll({
+        where: whereClause,
+        include: [
+          {
+            model: Project,
+            as: "project",
+            attributes: ["id", "name"],
+          },
+          {
+            model: DailyTaskLog,
+            as: "dailyLog",
+            attributes: ["id", "created_by", "assigned_to"],
+            include: [
+              {
+                model: User,
+                as: "assignedUser",
+                attributes: ["id", "fullName", "email"],
+              },
+              {
+                model: User,
+                as: "creator",
+                attributes: ["id", "fullName", "email"],
+              },
+            ],
+          },
+        ],
+        order: [["created_at", "DESC"]],
+      });
 
-    return data;
-  } catch (error) {
-    throw error;
+      return data;
+    } catch (error) {
+      throw error;
+    }
   }
-}
   public async updateTaskStatus(task: Task, newStatus?: string): Promise<Task> {
     try {
       if (!newStatus) {
         throw new Error("Status is required");
       }
       const now = new Date();
-      newStatus.toLowerCase() === "in progress"
+      newStatus.toLowerCase() === "in_progress"
         ? (task.start_time = now)
         : newStatus.toLowerCase() === "completed"
         ? (task.end_time = now)

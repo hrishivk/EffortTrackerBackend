@@ -1,20 +1,15 @@
 import { Sequelize, Model, DataTypes } from "sequelize";
 
-export class DailyTaskLog extends Model {
+export class ProjectMember extends Model {
   public id!: string;
-  public user_id!: string;
   public project_id!: string;
-  public date!: Date;
-  public total_time!: string;
-  public created_by!: string;
-  public assigned_to!: string;
-  public locked!: boolean;
-  public locked_at!: Date | null;
+  public user_id!: string;
+  public role!: string;
   public created_at!: Date;
 }
 
-export const initDailyTaskLogModel = (sequelize: Sequelize) => {
-  DailyTaskLog.init(
+export const initProjectMemberModel = (sequelize: Sequelize) => {
+  ProjectMember.init(
     {
       id: {
         allowNull: false,
@@ -22,32 +17,26 @@ export const initDailyTaskLogModel = (sequelize: Sequelize) => {
         type: DataTypes.STRING(20),
         defaultValue: () => generateAlphaNumericValue(15),
       },
-      created_by: {
-        type: DataTypes.STRING(20),
-        allowNull: false,
-        references: { model: "users", key: "id" },
-      },
-      assigned_to: {
-        type: DataTypes.STRING(20),
-        allowNull: false,
-        references: { model: "users", key: "id" },
-      },
       project_id: {
         type: DataTypes.STRING(20),
-        allowNull: true,
-        references: { model: "projects", key: "id" },
+        allowNull: false,
+        references: {
+          model: "projects",
+          key: "id",
+        },
         onDelete: "CASCADE",
       },
-      date: {
-        type: DataTypes.DATEONLY,
+      user_id: {
+        type: DataTypes.STRING(20),
         allowNull: false,
+        references: {
+          model: "users",
+          key: "id",
+        },
+        onDelete: "CASCADE",
       },
-      locked: {
-        type: DataTypes.BOOLEAN,
-        defaultValue: false,
-      },
-      locked_at: {
-        type: DataTypes.DATE,
+      role: {
+        type: DataTypes.STRING(50),
         allowNull: true,
       },
       created_at: {
@@ -56,11 +45,17 @@ export const initDailyTaskLogModel = (sequelize: Sequelize) => {
       },
     },
     {
-      tableName: "daily_task_logs",
+      tableName: "project_members",
       underscored: true,
       sequelize,
       schema: "tracker",
       timestamps: false,
+      indexes: [
+        {
+          unique: true,
+          fields: ["project_id", "user_id"],
+        },
+      ],
     }
   );
 };
@@ -72,3 +67,5 @@ function generateAlphaNumericValue(length: number): string {
     chars.charAt(Math.floor(Math.random() * chars.length))
   ).join("");
 }
+
+export default initProjectMemberModel;

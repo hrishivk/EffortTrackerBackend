@@ -2,19 +2,23 @@ import { Request, Response, NextFunction } from "express";
 import { sendResponse } from "../utils/sendResponse";
 import HTTP_statusCode from "../Enums/statuCode";
 import { userService } from "../service/user.service";
+import { superAdminService } from "../service/super-admin.service";
 const UserService = new userService();
+const SuperAdminService = new superAdminService();
 
 export class userController {
   public async task(req: Request, res: Response) {
     try {
-      console.log(req.body)
-      const { created_by,assigned_to, project, description, priority } = req.body;
+      const { created_by, assigned_to, project, project_id, description, priority, end_time, status } = req.body;
       const data = await UserService.addTask({
         created_by,
         assigned_to,
         project,
+        project_id,
         description,
         priority,
+        end_time,
+        status,
       });
       sendResponse(res, HTTP_statusCode.CREATED, {
         success: true,
@@ -35,8 +39,10 @@ export class userController {
   }
   public async taskList(req: Request, res: Response) {
     try {
-      const { date, id ,role} = req.query;
-      const data = await UserService.listTask({ date, id,role});
+  
+      console.log(req.query)
+      const { date, id, role, assigned_to, project } = req.query;
+      const data = await UserService.listTask({ date, id, role, assigned_to, project });
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "fetch task successful",
@@ -83,6 +89,25 @@ export class userController {
       });
     }
   }
+  public async listProjects(req: Request, res: Response) {
+    try {
+      const userId = req.user?.id;
+      const userRole = req.user?.role;
+      const search = req.query.search as string | undefined;
+      const data = await SuperAdminService.getAllProjects(userId, userRole, search);
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "Projects fetched successfully",
+        data,
+      });
+    } catch (error: any) {
+      sendResponse(res, HTTP_statusCode.InternalServerError, {
+        success: false,
+        message: error.message || "Fetching projects failed",
+      });
+    }
+  }
+
   public async taskLock(req: Request, res: Response) {
     try {
       const { date, id } = req.query;

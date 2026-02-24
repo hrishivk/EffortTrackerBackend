@@ -1,18 +1,12 @@
 import { Application } from "express";
 import { AuthRoute } from "./auth.routes";
-import { spRoute } from "./super-admin.routes";
+import { SuperAdminRoute } from "./super-admin.routes";
 import { amRoute } from "./admin-manager.route";
 import { UserRoute } from "./user.route";
 
-export class allMain {
-  static route(app: Application): void {
-    const authRoute = new AuthRoute();
-    const superAdminRoute = new spRoute();
-    const adminManager = new amRoute();
-    const userRoute = new UserRoute();
-    app.use("/auth", authRoute.getRouter());
-    app.use("/role-sp", superAdminRoute.getRouter());
-    app.use("/role-am", adminManager.getRouter());
-    app.use("/role-user", userRoute.getRouter());
-  }
+export function registerRoutes(app: Application): void {
+  app.use("/auth", new AuthRoute().getRouter());
+  app.use("/role-sp", new SuperAdminRoute().getRouter());
+  app.use("/role-am", new amRoute().getRouter());
+  app.use("/role-user", new UserRoute().getRouter());
 }

@@ -6,7 +6,7 @@ export class amRoute {
   private controller = new managerController();
 
   constructor() {
-    this.router.get("/list-am-User", this.controller.listAllUsers);
+    // list-users moved to /role-sp/list-users (works for both SP and AM)
   }
   public getRouter(): Router {
     return this.router;

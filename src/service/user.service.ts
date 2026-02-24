@@ -8,6 +8,7 @@ import {
 import { TaskStatusUpdate, TaskWithDailyLog } from "../types/task.types";
 import { Task } from "../connection/models/tasks";
 import { DailyTaskLog } from "../connection/models/daily_task_logs";
+import { Project } from "../connection/models/project";
 const userRepository = new UserRepository();
 
 export class userService {
@@ -28,33 +29,33 @@ export class userService {
       if (!isValid) {
         throw new Error("Invalid Password");
       }
-      let projectName = (user as any).Project?.name ?? null;
       await userRepository.setUserActive(user.id as string);
-      const { id, role, email: userEmail, fullName, image } = user.dataValues;
-      const token = await userRepository.secureToken(user.email, role);
+      const { id, role, email: userEmail, fullName } = user.dataValues;
+      const token = await userRepository.secureToken(id, user.email, role);
       const today = new Date();
       const formattedToday = today.toISOString().split("T")[0];
-       let todayLogs = await userRepository.findDailyLogs(formattedToday, id);
-      let todayLog: DailyTaskLog| null = todayLogs.length > 0 ? todayLogs[0] : null;
-      if (!todayLog )  {
-        const previousLog = await userRepository.findClosestPreviousLog(
+      let todayLogs = await userRepository.findDailyLogs(formattedToday, id);
+      let todayLog: DailyTaskLog | null = todayLogs.length > 0 ? todayLogs[0] : null;
+      if (!todayLog) {
+        const previousLogs = await userRepository.findClosestPreviousLog(
           formattedToday,
           id
-        )   
-        if (previousLog ) {       
-          const previousTasks = await userRepository.todayTask(previousLog.id)
+        );
+        if (previousLogs && previousLogs.length > 0) {
+          const previousLog = previousLogs[0];
+          const previousTasks = await userRepository.todayTask(previousLog.id);
           const carryOverTasks = previousTasks.filter((task: any) => {
             const status = task.dataValues.status?.toLowerCase().trim();
-            return status === "in progress" || status === "yet to start";
+            return status === "in_progress" || status === "yet_to_start";
           });
           if (carryOverTasks.length > 0) {
-              const today = new Date();
-                const formattedToday = today.toISOString().split("T")[0]; 
-             todayLog=await userRepository.createDailyTaskLog( undefined,id,formattedToday);
+            const today = new Date();
+            const formattedToday = today.toISOString().split("T")[0];
+            todayLog = await userRepository.createDailyTaskLog(undefined, id, formattedToday);
             for (const task of carryOverTasks) {
               await userRepository.createNewTask({
                 dailyTaskLog: todayLog,
-                project: task.project,
+                project_id: task.project_id,
                 description: task.description,
                 priority: task.priority,
               });
@@ -68,12 +69,11 @@ export class userService {
           role,
           email,
           fullName,
-          projectName,
         },
         token,
       };
     } catch (error: any) {
-      console.log(error)
+      console.log(error);
       throw new Error(error.message || "Login failed");
     }
   }
@@ -87,7 +87,21 @@ export class userService {
   }
   public async addTask(data: AddTask): Promise<Task> {
     try {
-      const { created_by, assigned_to, project, description, priority } = data;
+      const { created_by, assigned_to, project, project_id, description, priority, end_time, status } = data;
+
+      // Resolve project_id: use provided project_id, or look up by project name
+      let resolvedProjectId = project_id;
+      if (!resolvedProjectId && project) {
+        const projectRecord = await Project.findOne({ where: { name: project } });
+        if (!projectRecord) {
+          throw new Error(`Project "${project}" not found`);
+        }
+        resolvedProjectId = projectRecord.id;
+      }
+      if (!resolvedProjectId) {
+        throw new Error("Either project or project_id is required");
+      }
+
       const dailytaskTime = new Date().toISOString().split("T")[0];
       let dailyTaskLog = await userRepository.findDailyTaskLog(
         dailytaskTime,
@@ -99,19 +113,31 @@ export class userService {
         dailyTaskLog = await userRepository.createDailyTaskLog(
           created_by,
           assigned_to,
-          dailytaskTime
+          dailytaskTime,
+          resolvedProjectId
         );
       }
       if (dailyTaskLog?.dataValues.locked) {
         throw new Error("Daily log is locked. Cannot add new task.");
       }
+
+      // Map "pending" status to DB enum "yet_to_start"
+      const taskStatus = status === "pending" ? "yet_to_start" : status;
+
+      // Normalize priority to title case (DB enum: "Low", "Medium", "High")
+      const normalizedPriority = priority
+        ? priority.charAt(0).toUpperCase() + priority.slice(1).toLowerCase()
+        : priority;
+
       const newTask = await userRepository.createNewTask({
         created_by,
         assigned_to,
         dailyTaskLog,
-        project,
+        project_id: resolvedProjectId,
         description,
-        priority,
+        priority: normalizedPriority,
+        end_time,
+        status: taskStatus,
       });
       return newTask;
     } catch (error: any) {
@@ -121,13 +147,21 @@ export class userService {
   }
   public async listTask(data: any): Promise<Task[]> {
     try {
-      const { date, id, role } = data;
-      const todayLog = await userRepository.findDailyLogs(date, id, role);
-      if (!todayLog) {
+      const { date, id, role, assigned_to, project } = data;
+      const todayLog = await userRepository.findDailyLogs(date, id, role, assigned_to as string);
+      if (!todayLog || todayLog.length === 0) {
         throw new Error("No task found");
       }
       const logIds = todayLog.map((log: any) => log.id);
-      return await userRepository.todayTask(logIds);
+
+      // Resolve project name to project_id if provided
+      let projectId: string | undefined;
+      if (project) {
+        const projectRecord = await Project.findOne({ where: { name: project } });
+        if (projectRecord) projectId = projectRecord.id;
+      }
+
+      return await userRepository.todayTask(logIds, projectId);
     } catch (error) {
       console.error("Error in listTask:", error);
       throw error;
@@ -154,7 +188,6 @@ export class userService {
       const todayDate = new Date();
       const task = (await userRepository.findTask(id)) as TaskWithDailyLog;
       if (!task) throw new Error("Task not found");
-      console.log(task);
       if (task.isLocked) {
         throw new Error("Daily log is locked. Cannot update task status.");
       }

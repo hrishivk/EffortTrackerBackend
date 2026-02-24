@@ -1,5 +1,6 @@
 import expres, { Application, Router } from "express";
 import { AuthController } from "../controllers/auth.controller";
+import { roleGuards } from "../middlewares/verifyRole";
 export class AuthRoute {
   private router: Router = expres.Router();
   private controller = new AuthController();

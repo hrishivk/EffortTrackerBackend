@@ -5,11 +5,17 @@ import { adminMangerService } from "../service/admin-manger.service";
 
 const SuperAdminService = new adminMangerService();
 export class managerController {
-  public async listAllUsers(req: Request, res: Response) {
+  public async listAllUsers(req: Request, res: Response):Promise<void> {
     try {
-      const { id } = req.query;
-      const data = await SuperAdminService.getAllUsers(id as string);
-      console.log(data);
+      const managerId = req.user?.id;
+      if (!managerId) {
+        sendResponse(res, HTTP_statusCode.unAuthorized, {
+          success: false,
+          message: "Unauthorized: user not found in token",
+        });
+        return;
+      }
+      const data = await SuperAdminService.getAllUsers(managerId);
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "Fetched successful",
