@@ -12,7 +12,7 @@ export class SuperAdminController {
         fullName, email, password, role,
         jobTitle, employeeId, contactNumber, dateOfBirth,
         bloodGroup, department, workSchedule, joiningDate,
-        projectCategory, projects, sendWelcomeEmail, requirePasswordChange,
+        projects, sendWelcomeEmail, requirePasswordChange,
       } = req.body;
 
       // AM creating user → auto-set manager_id from JWT
@@ -33,7 +33,6 @@ export class SuperAdminController {
         department,
         work_schedule: workSchedule,
         joining_date: joiningDate,
-        project_category: projectCategory,
         require_password_change: requirePasswordChange,
         projects,
         sendWelcomeEmail,
@@ -166,10 +165,10 @@ export class SuperAdminController {
   }
   public async upsertProject(req: Request, res: Response) {
     try {
-      const { id, name, description, domain_id, project_category, client_department, start_date, end_date, status } = req.body;
+      const { id, name, description, domain_id, client_department, start_date, end_date, status } = req.body;
       const created_by = req.user?.id;
       const data = await SuperAdminService.upsertProject({
-        id, name, description, domain_id, project_category, client_department, start_date, end_date, status, created_by,
+        id, name, description, domain_id, client_department, start_date, end_date, status, created_by,
       });
       sendResponse(res, id ? HTTP_statusCode.OK : HTTP_statusCode.CREATED, {
         success: true,
@@ -357,7 +356,7 @@ export class SuperAdminController {
         id, fullName, email, role, manager_id,
         jobTitle, employeeId, contactNumber, dateOfBirth,
         bloodGroup, department, workSchedule, joiningDate,
-        projectCategory, requirePasswordChange,
+        requirePasswordChange,
       } = req.body;
 
       const data = await SuperAdminService.updateOneUser({
@@ -370,7 +369,6 @@ export class SuperAdminController {
         department,
         work_schedule: workSchedule,
         joining_date: joiningDate,
-        project_category: projectCategory,
         require_password_change: requirePasswordChange,
       });
       sendResponse(res, HTTP_statusCode.OK, {

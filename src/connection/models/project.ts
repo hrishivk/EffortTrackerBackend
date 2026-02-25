@@ -11,7 +11,6 @@ export class Project
   public created_by!: string | null;
   public name!: string;
   public description!: string;
-  public project_category!: string | null;
   public client_department!: string | null;
   public start_date!: Date | null;
   public end_date!: Date | null;
@@ -54,10 +53,6 @@ export const initProjectModel = (sequelize: Sequelize) => {
       },
       description: {
         type: DataTypes.STRING(1000),
-      },
-      project_category: {
-        type: DataTypes.STRING(100),
-        allowNull: true,
       },
       client_department: {
         type: DataTypes.STRING(200),

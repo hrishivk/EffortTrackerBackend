@@ -6,7 +6,6 @@ export interface ProjectAttributes {
   created_by?: string | null;
   name: string;
   description: string;
-  project_category?: string | null;
   client_department?: string | null;
   start_date?: Date | null;
   end_date?: Date | null;
@@ -21,7 +20,6 @@ export type ProjectInput = Optional<
   | "id"
   | "domain_id"
   | "created_by"
-  | "project_category"
   | "name"
   | "description"
   | "client_department"
@@ -40,7 +38,6 @@ export interface ProjectUpsertDTO {
   name: string;
   description?: string;
   domain_id: string;
-  project_category?: string;
   client_department?: string;
   start_date?: string;
   end_date?: string;

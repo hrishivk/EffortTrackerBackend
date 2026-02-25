@@ -81,7 +81,7 @@ export class superAdminRepository {
           projectWhereClause = {
             [Op.and]: [
               projectWhereClause,
-              { project_category: currentUser.department },
+              { client_department: currentUser.department },
             ],
           };
         }
@@ -274,7 +274,7 @@ export class superAdminRepository {
           whereClause = {
             [Op.and]: [
               whereClause,
-              { project_category: currentUser.department },
+              { client_department: currentUser.department },
             ],
           };
         }
@@ -323,7 +323,6 @@ export class superAdminRepository {
           description: plain.description,
           dueDate: plain.end_date,
           startDate: plain.start_date,
-          projectCategory: plain.project_category || null,
           clientDepartment: plain.client_department || null,
           status: plain.status?.toUpperCase().replace("_", " ") || "ACTIVE",
           progress,
@@ -704,7 +703,7 @@ export class superAdminRepository {
         id, fullName, email, role, manager_id,
         job_title, employee_id, contact_number, date_of_birth,
         blood_group, department, work_schedule, joining_date,
-        project_category, require_password_change,
+        require_password_change,
       } = data;
 
       const user = await User.findByPk(id);
@@ -723,7 +722,6 @@ export class superAdminRepository {
       if (department !== undefined) updateLoad.department = department;
       if (work_schedule !== undefined) updateLoad.work_schedule = work_schedule;
       if (joining_date !== undefined) updateLoad.joining_date = joining_date;
-      if (project_category !== undefined) updateLoad.project_category = project_category;
       if (require_password_change !== undefined) updateLoad.require_password_change = require_password_change;
 
       await user.update(updateLoad);

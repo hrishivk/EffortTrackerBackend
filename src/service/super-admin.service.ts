@@ -12,7 +12,7 @@ export class superAdminService {
       fullName, email, password, role, manager_id,
       job_title, employee_id, contact_number, date_of_birth,
       blood_group, department, work_schedule, joining_date,
-      project_category, require_password_change, projects,
+      require_password_change, projects,
     } = data;
 
     if (!password) {
@@ -45,7 +45,6 @@ export class superAdminService {
         department: department?.trim() ,
         work_schedule: work_schedule?.trim(),
         joining_date: joining_date ,
-        project_category: project_category?.trim() || null,
         require_password_change: require_password_change || false,
         lastSeenAt: "No login activity recorded",
       };
@@ -200,7 +199,7 @@ export class superAdminService {
   }
   public async upsertProject(data: ProjectUpsertDTO) {
     try {
-      const { id, name, description, domain_id, project_category, client_department, start_date, end_date, status, created_by } = data;
+      const { id, name, description, domain_id, client_department, start_date, end_date, status, created_by } = data;
 
       if (!name || !name.trim()) {
         throw new Error("Project name is required");
@@ -217,7 +216,6 @@ export class superAdminService {
         name: name.trim(),
         description: description?.trim(),
         domain_id,
-        project_category: project_category?.trim() || null,
         client_department: client_department?.trim() || null,
         start_date: start_date || null,
         end_date: end_date || null,

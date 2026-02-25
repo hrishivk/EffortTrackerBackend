@@ -16,7 +16,6 @@ export interface userAttributes {
   department?: string | null;
   work_schedule?: string | null;
   joining_date?: string | null;
-  project_category?: string | null;
   require_password_change?: boolean;
   lastSeenAt?: Date | null | string;
   createdAt: Date;
@@ -65,7 +64,6 @@ export interface AddUserDTO {
   department?: string;
   work_schedule?: string;
   joining_date?: string;
-  project_category?: string;
   require_password_change?: boolean;
   projects?: string;
   sendWelcomeEmail?: boolean;
@@ -87,7 +85,6 @@ export type userInput = Optional<
   | "department"
   | "work_schedule"
   | "joining_date"
-  | "project_category"
   | "require_password_change"
   | "lastSeenAt"
   | "createdAt"

@@ -20,7 +20,6 @@ export class User
   public department!: string | null;
   public work_schedule!: string | null;
   public joining_date!: string | null;
-  public project_category!: string | null;
   public require_password_change!: boolean;
   public lastSeenAt?: Date | null | string;
   public createdAt!: Date;
@@ -86,10 +85,6 @@ export const initUserModel = (sequelize: Sequelize) => {
       },
       joining_date: {
         type: DataTypes.DATEONLY,
-        allowNull: true,
-      },
-      project_category: {
-        type: DataTypes.STRING(100),
         allowNull: true,
       },
       require_password_change: {

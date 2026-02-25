@@ -29,7 +29,7 @@ export class Database {
 
     Associations.initModels(sequelize);
     Associations.initialize();
-    await sequelize.sync({ alter: true });
+    await sequelize.sync();
 
     Database.instance = sequelize;
   }

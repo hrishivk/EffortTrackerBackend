@@ -34,7 +34,7 @@ export const initTaskModel = (sequelize: Sequelize) => {
       },
       project_id: {
         type: DataTypes.STRING(20),
-        allowNull: false,
+        allowNull: true,
         references: {
           model: "projects",
           key: "id",

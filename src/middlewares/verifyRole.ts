@@ -71,15 +71,18 @@ const authorize = (allowedRoles: Role[]) => {
   };
 };
 
+type RoleGuards = Record<string, ReturnType<typeof authorize>>;
+
 export const roleGuards = {
   SuperAdmin: authorize([Role.SuperAdmin]),
   Admin: authorize([Role.Admin]),
   Manager: authorize([Role.Manager]),
   User: authorize([Role.User]),
+  Devloper: authorize([Role.Devloper]),
   AdminOrManager: authorize([Role.Admin, Role.Manager]),
   AdminOrSuperAdmin: authorize([Role.Admin, Role.SuperAdmin]),
-  allAcess:authorize([Role.User,Role.SuperAdmin,Role.Manager,Role.User,Role.Devloper]),
+  allAcess: authorize([Role.SuperAdmin, Role.Admin, Role.Manager, Role.User, Role.Devloper]),
   AnyAuthenticated: authorize(Object.values(Role)),
-};
+} as const satisfies RoleGuards;
 
 export default authorize;

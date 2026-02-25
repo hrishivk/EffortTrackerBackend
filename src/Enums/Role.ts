@@ -1,14 +1,9 @@
 export enum Role {
   SuperAdmin = 'SP',
   Admin = 'AM',
-  Manager = 'AM',
+  Manager = 'MG',
   User = 'USER',
   Devloper = 'DEVLOPER',
 }
 
-export type RoleType =
-  | Role.SuperAdmin
-  | Role.Admin
-  | Role.Manager
-  | Role.User
-  | Role.Devloper;
+export type RoleType = `${Role}`;
