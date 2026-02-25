@@ -11,18 +11,19 @@ export class AuthController {
     try {
       const { email, password } = req.body;
       const data = await UserService.login(email, password);
+      const isProduction = envConfig.Production === "Production";
       res.cookie("rhythmrx_auth", data.token?.accessToken, {
         httpOnly: true,
-        secure: envConfig.Production == "Production",
+        secure: isProduction,
         maxAge: 5 * 60 * 1000,
-        sameSite: "strict",
+        sameSite: isProduction ? "none" : "strict",
         path: "/",
       });
       res.cookie("rhythmrx_refresh_auth", data.token?.refreshToken, {
         httpOnly: true,
-        secure: envConfig.Production == "Production",
+        secure: isProduction,
         maxAge: 7 * 24 * 60 * 60 * 1000,
-        sameSite: "strict",
+        sameSite: isProduction ? "none" : "strict",
         path: "/",
       });
       sendResponse(res, HTTP_statusCode.OK, {

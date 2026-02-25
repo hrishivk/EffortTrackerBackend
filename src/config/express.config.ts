@@ -8,7 +8,7 @@ import { envConfig } from "./env.config";
 export function configureExpress(app: Application): void {
   app.use(
     cors({
-      origin: "https://www.effortracker.sbs",
+      origin: [envConfig.BASE_URL || "http://localhost:5173"],
       credentials: true,
     })
   );

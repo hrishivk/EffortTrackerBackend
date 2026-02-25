@@ -35,11 +35,12 @@ const authorize = (allowedRoles: Role[]) => {
           user.email,
           user.role
         );
+        const isProduction = envConfig.Production === "Production";
         res.cookie("rhythmrx_auth", newAccessToken.accessToken, {
           httpOnly: true,
-          secure: false,
+          secure: isProduction,
           maxAge: 5 * 60 * 1000,
-          sameSite: "strict",
+          sameSite: isProduction ? "none" : "strict",
           path: "/",
         });
         token = newAccessToken.accessToken;
