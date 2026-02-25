@@ -16,12 +16,19 @@ declare module "express-serve-static-core" {
 const authorize = (allowedRoles: Role[]) => {
   return async (req: Request, res: Response, next: NextFunction):Promise<any> => {
     let token = req.cookies?.rhythmrx_auth;
+    // Also accept token from Authorization: Bearer <token> header
+    if (!token) {
+      const authHeader = req.headers.authorization;
+      if (authHeader?.startsWith("Bearer ")) {
+        token = authHeader.split(" ")[1];
+      }
+    }
     try {
       if (!token) {
-        const refreshToken = req.cookies.rhythmrx_refresh_auth;
+        const refreshToken = req.cookies?.rhythmrx_refresh_auth;
         if (!refreshToken) {
            return res.status(HTTP_statusCode.unAuthorized).json({
-            error: "Authentication refresh token missing",
+            error: "Authentication token missing",
           });
         }
         const refreshDecoded = jwt.verify( refreshToken,JWT_REfresh_SECRET) as JwtPayload;
