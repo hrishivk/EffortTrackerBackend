@@ -328,7 +328,7 @@ export class UserRepository {
     }
   }
 
-  public async todayTask(ids: string[] | string, projectId?: string): Promise<Task[]> {
+  public async todayTask(ids: string[] | string, projectId?: string, offset?: number, limit?: number): Promise<{ tasks: Task[]; totalCount: number }> {
     try {
       const idArray = Array.isArray(ids) ? ids : [ids];
       const whereClause: any = {
@@ -339,7 +339,8 @@ export class UserRepository {
       if (projectId) {
         whereClause.project_id = projectId;
       }
-      let data = await Task.findAll({
+
+      const queryOptions: any = {
         where: whereClause,
         include: [
           {
@@ -366,9 +367,14 @@ export class UserRepository {
           },
         ],
         order: [["created_at", "DESC"]],
-      });
+      };
 
-      return data;
+      if (offset !== undefined) queryOptions.offset = offset;
+      if (limit !== undefined) queryOptions.limit = limit;
+
+      const { count, rows } = await Task.findAndCountAll(queryOptions);
+
+      return { tasks: rows, totalCount: count };
     } catch (error) {
       throw error;
     }

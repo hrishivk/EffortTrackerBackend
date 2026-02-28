@@ -134,11 +134,14 @@ export class SuperAdminController {
       const userId = req.user?.id;
       const userRole = req.user?.role;
       const search = req.query.search as string | undefined;
-      const data = await SuperAdminService.getAllProjects(userId, userRole, search);
+      const page = req.query.page ? parseInt(req.query.page as string) : undefined;
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : undefined;
+      const result = await SuperAdminService.getAllProjects(userId, userRole, search, page, limit);
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "Fetched successful",
-        data,
+        data: result.data,
+        totalPages: result.totalPages,
       });
     } catch (error: any) {
       sendResponse(res, HTTP_statusCode.InternalServerError, {

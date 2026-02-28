@@ -170,7 +170,7 @@ export class superAdminRepository {
       throw error;
     }
   }
-  public async listAllProjects(userId?: string, userRole?: string, search?: string) {
+  public async listAllProjects(userId?: string, userRole?: string, search?: string, page?: number, limit?: number) {
     try {
       const includeClause: any[] = [
         {
@@ -282,11 +282,19 @@ export class superAdminRepository {
 
       console.log("Final whereClause:", JSON.stringify(whereClause, null, 2));
 
-      const projects = await Project.findAll({
+      const queryOptions: any = {
         where: whereClause,
         include: includeClause,
         order: [["createdAt", "DESC"]],
-      });
+        distinct: true,
+      };
+
+      if (page && limit) {
+        queryOptions.offset = (page - 1) * limit;
+        queryOptions.limit = limit;
+      }
+
+      const { count, rows: projects } = await Project.findAndCountAll(queryOptions);
 
       // Calculate progress from tasks for each project
       const projectIds = projects.map((p: any) => p.id);
@@ -312,7 +320,7 @@ export class superAdminRepository {
         });
       });
 
-      return projects.map((p: any) => {
+      const data = projects.map((p: any) => {
         const plain = p.get({ plain: true });
         const tasks = taskMap.get(plain.id) || { total: 0, completed: 0 };
         const progress = tasks.total === 0 ? 0 : Math.round((tasks.completed / tasks.total) * 100);
@@ -336,6 +344,11 @@ export class superAdminRepository {
           })),
         };
       });
+
+      return {
+        data,
+        totalPages: limit ? Math.ceil(count / limit) : 1,
+      };
     } catch (error) {
       throw error;
     }

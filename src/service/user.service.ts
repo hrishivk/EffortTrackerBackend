@@ -43,7 +43,7 @@ export class userService {
         );
         if (previousLogs && previousLogs.length > 0) {
           const previousLog = previousLogs[0];
-          const previousTasks = await userRepository.todayTask(previousLog.id);
+          const { tasks: previousTasks } = await userRepository.todayTask(previousLog.id);
           const carryOverTasks = previousTasks.filter((task: any) => {
             const status = task.dataValues.status?.toLowerCase().trim();
             return status === "in_progress" || status === "yet_to_start";
@@ -145,9 +145,9 @@ export class userService {
       throw new Error(error.message || "Failed");
     }
   }
-  public async listTask(data: any): Promise<Task[]> {
+  public async listTask(data: any): Promise<{ data: Task[]; totalPages: number }> {
     try {
-      const { date, id, role, assigned_to, project } = data;
+      const { date, id, role, assigned_to, project, page = 1, limit = 10 } = data;
       const todayLog = await userRepository.findDailyLogs(date, id, role, assigned_to as string);
       if (!todayLog || todayLog.length === 0) {
         throw new Error("No task found");
@@ -161,7 +161,13 @@ export class userService {
         if (projectRecord) projectId = projectRecord.id;
       }
 
-      return await userRepository.todayTask(logIds, projectId);
+      const skip = (page - 1) * limit;
+      const { tasks, totalCount } = await userRepository.todayTask(logIds, projectId, skip, limit);
+
+      return {
+        data: tasks,
+        totalPages: Math.ceil(totalCount / limit),
+      };
     } catch (error) {
       console.error("Error in listTask:", error);
       throw error;

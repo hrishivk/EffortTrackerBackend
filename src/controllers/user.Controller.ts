@@ -39,19 +39,27 @@ export class userController {
   }
   public async taskList(req: Request, res: Response) {
     try {
-  
-      console.log(req.query)
-      const { date, id, role, assigned_to, project } = req.query;
-      const data = await UserService.listTask({ date, id, role, assigned_to, project });
+      const { date, id, role, assigned_to, project, page = "1", limit = "10" } = req.query;
+      const result = await UserService.listTask({
+        date, id, role, assigned_to, project,
+        page: parseInt(page as string),
+        limit: parseInt(limit as string),
+      });
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "fetch task successful",
-        data,
+        data: result.data,
+        totalPages: result.totalPages,
       });
     } catch (error: any) {
-      console.log(error.message == "No task found");
-      console.log(error.message);
       if (error.message == "No task found") {
+        sendResponse(res, HTTP_statusCode.OK, {
+          success: true,
+          message: "No task found",
+          data: [],
+          totalPages: 0,
+        });
+      } else {
         sendResponse(res, HTTP_statusCode.TaskFailed, {
           success: false,
           message: error.message || "task fetch failed",
@@ -94,11 +102,14 @@ export class userController {
       const userId = req.user?.id;
       const userRole = req.user?.role;
       const search = req.query.search as string | undefined;
-      const data = await SuperAdminService.getAllProjects(userId, userRole, search);
+      const page = req.query.page ? parseInt(req.query.page as string) : undefined;
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : undefined;
+      const result = await SuperAdminService.getAllProjects(userId, userRole, search, page, limit);
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "Projects fetched successfully",
-        data,
+        data: result.data,
+        totalPages: result.totalPages,
       });
     } catch (error: any) {
       sendResponse(res, HTTP_statusCode.InternalServerError, {

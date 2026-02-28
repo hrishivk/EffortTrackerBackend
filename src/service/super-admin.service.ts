@@ -159,9 +159,9 @@ export class superAdminService {
     }
   }
 
-  public async getAllProjects(userId?: string, userRole?: string, search?: string) {
+  public async getAllProjects(userId?: string, userRole?: string, search?: string, page?: number, limit?: number) {
     try {
-      return await SuperAdminRepository.listAllProjects(userId, userRole, search);
+      return await SuperAdminRepository.listAllProjects(userId, userRole, search, page, limit);
     } catch (error) {
       throw error;
     }
