@@ -2,7 +2,6 @@ import { Request, Response, NextFunction } from "express";
 import { userService } from "../service/user.service";
 import HTTP_statusCode from "../Enums/statuCode";
 import { sendResponse } from "../utils/sendResponse";
-import { envConfig } from "../config/env.config";
 
 const UserService = new userService();
 
@@ -11,19 +10,18 @@ export class AuthController {
     try {
       const { email, password } = req.body;
       const data = await UserService.login(email, password);
-      const isProduction = envConfig.Production === "Production";
       res.cookie("rhythmrx_auth", data.token?.accessToken, {
         httpOnly: true,
-        secure: isProduction,
+        secure: true,
         maxAge: 5 * 60 * 1000,
-        sameSite: isProduction ? "none" : "strict",
+        sameSite: "none",
         path: "/",
       });
       res.cookie("rhythmrx_refresh_auth", data.token?.refreshToken, {
         httpOnly: true,
-        secure: isProduction,
+        secure: true,
         maxAge: 7 * 24 * 60 * 60 * 1000,
-        sameSite: isProduction ? "none" : "strict",
+        sameSite: "none",
         path: "/",
       });
       sendResponse(res, HTTP_statusCode.OK, {
@@ -44,14 +42,14 @@ export class AuthController {
       const data = await UserService.logout(id as string);
       res.clearCookie("rhythmrx_auth", {
         httpOnly: true,
-        secure: false,
-        sameSite: "strict",
+        secure: true,
+        sameSite: "none",
         path: "/",
       });
       res.clearCookie("rhythmrx_refresh_auth", {
         httpOnly: true,
-        secure: false,
-        sameSite: "strict",
+        secure: true,
+        sameSite: "none",
         path: "/",
       });
 
