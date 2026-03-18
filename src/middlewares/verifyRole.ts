@@ -16,13 +16,6 @@ declare module "express-serve-static-core" {
 const authorize = (allowedRoles: Role[]) => {
   return async (req: Request, res: Response, next: NextFunction):Promise<any> => {
     let token = req.cookies?.rhythmrx_auth;
-    // Also accept token from Authorization: Bearer <token> header
-    if (!token) {
-      const authHeader = req.headers.authorization;
-      if (authHeader?.startsWith("Bearer ")) {
-        token = authHeader.split(" ")[1];
-      }
-    }
     try {
       if (!token) {
         const refreshToken = req.cookies?.rhythmrx_refresh_auth;
@@ -37,19 +30,26 @@ const authorize = (allowedRoles: Role[]) => {
           email: refreshDecoded.email,
           role: refreshDecoded.role,
         };
-        const newAccessToken = await CredentialHashing.newHashtoken(
+        const newTokens = await CredentialHashing.hashtoken(
           user.id,
           user.email,
           user.role
         );
-        res.cookie("rhythmrx_auth", newAccessToken.accessToken, {
+        res.cookie("rhythmrx_auth", newTokens.accessToken, {
           httpOnly: true,
           secure: true,
-          maxAge: 5 * 60 * 1000,
+          maxAge: 15 * 60 * 1000,
           sameSite: "none",
           path: "/",
         });
-        token = newAccessToken.accessToken;
+        res.cookie("rhythmrx_refresh_auth", newTokens.refreshToken, {
+          httpOnly: true,
+          secure: true,
+          maxAge: 16 * 60 * 60 * 1000,
+          sameSite: "none",
+          path: "/",
+        });
+        token = newTokens.accessToken;
       }
 
       const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;

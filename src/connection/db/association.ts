@@ -52,6 +52,12 @@ export class Associations {
       as: "projectMemberships",
     });
 
+    // User <-> Manager (self-referencing)
+    User.belongsTo(User, {
+      foreignKey: "manager_id",
+      as: "manager",
+    });
+
     // User <-> DailyTaskLog
     User.hasMany(DailyTaskLog, {
       foreignKey: "assigned_to",

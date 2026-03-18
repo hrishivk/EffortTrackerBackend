@@ -121,10 +121,10 @@ export class userService {
         throw new Error("Daily log is locked. Cannot add new task.");
       }
 
-      // Map "pending" status to DB enum "yet_to_start"
+
       const taskStatus = status === "pending" ? "yet_to_start" : status;
 
-      // Normalize priority to title case (DB enum: "Low", "Medium", "High")
+ 
       const normalizedPriority = priority
         ? priority.charAt(0).toUpperCase() + priority.slice(1).toLowerCase()
         : priority;
@@ -148,21 +148,31 @@ export class userService {
   public async listTask(data: any): Promise<{ data: Task[]; totalPages: number }> {
     try {
       const { date, id, role, assigned_to, project, page = 1, limit = 10 } = data;
-      const todayLog = await userRepository.findDailyLogs(date, id, role, assigned_to as string);
-      if (!todayLog || todayLog.length === 0) {
-        throw new Error("No task found");
-      }
-      const logIds = todayLog.map((log: any) => log.id);
+      const skip = (page - 1) * limit;
 
-      // Resolve project name to project_id if provided
       let projectId: string | undefined;
       if (project) {
         const projectRecord = await Project.findOne({ where: { name: project } });
         if (projectRecord) projectId = projectRecord.id;
       }
 
-      const skip = (page - 1) * limit;
+
+      if (!date && projectId) {
+        const { tasks, totalCount } = await userRepository.tasksByProject(projectId, skip, limit);
+        return {
+          data: tasks,
+          totalPages: Math.ceil(totalCount / limit),
+        };
+      }
+
+      const todayLog = await userRepository.findDailyLogs(date, id, role, assigned_to as string);
+      if (!todayLog || todayLog.length === 0) {
+        throw new Error("No task found");
+      }
+      const logIds = todayLog.map((log: any) => log.id);
+
       const { tasks, totalCount } = await userRepository.todayTask(logIds, projectId, skip, limit);
+      console.log('taskss',tasks)
 
       return {
         data: tasks,

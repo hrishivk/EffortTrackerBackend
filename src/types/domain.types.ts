@@ -9,7 +9,7 @@ export interface domainAttributes {
 export interface domainInput extends Partial<domainAttributes> {}
 
 export interface DomainUpsertDTO {
-  id?: string;
+  userId?: string;
   name: string;
   description?: string;
 }

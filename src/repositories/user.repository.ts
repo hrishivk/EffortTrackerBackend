@@ -178,14 +178,7 @@ export class UserRepository {
   }
   public async findDailyLogs(date: string, id: string, role?: string, assigned_to?: string) {
     try {
-      const datePart = date.split("T")[0];
-      const today = new Date();
-      const todayStr = today.toISOString().split("T")[0];
-      let rawDate = new Date(datePart);
-      if (datePart !== todayStr) {
-        rawDate.setDate(rawDate.getDate() + 1);
-      }
-      const formattedDate = rawDate.toISOString().split("T")[0];
+      const formattedDate = date.split("T")[0];
       if (role == "SP") {
         // If assigned_to filter is provided, show that specific user's tasks
         if (assigned_to) {
@@ -379,6 +372,47 @@ export class UserRepository {
       throw error;
     }
   }
+  public async tasksByProject(projectId: string, offset?: number, limit?: number): Promise<{ tasks: Task[]; totalCount: number }> {
+    try {
+      const queryOptions: any = {
+        where: { project_id: projectId },
+        include: [
+          {
+            model: Project,
+            as: "project",
+            attributes: ["id", "name"],
+          },
+          {
+            model: DailyTaskLog,
+            as: "dailyLog",
+            attributes: ["id", "created_by", "assigned_to", "date"],
+            include: [
+              {
+                model: User,
+                as: "assignedUser",
+                attributes: ["id", "fullName", "email"],
+              },
+              {
+                model: User,
+                as: "creator",
+                attributes: ["id", "fullName", "email"],
+              },
+            ],
+          },
+        ],
+        order: [["created_at", "DESC"]],
+      };
+
+      if (offset !== undefined) queryOptions.offset = offset;
+      if (limit !== undefined) queryOptions.limit = limit;
+
+      const { count, rows } = await Task.findAndCountAll(queryOptions);
+      return { tasks: rows, totalCount: count };
+    } catch (error) {
+      throw error;
+    }
+  }
+
   public async updateTaskStatus(task: Task, newStatus?: string): Promise<Task> {
     try {
       if (!newStatus) {

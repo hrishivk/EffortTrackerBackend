@@ -3,40 +3,14 @@ import { userService } from "../service/user.service";
 import HTTP_statusCode from "../Enums/statuCode";
 import { sendResponse } from "../utils/sendResponse";
 import { superAdminService } from "../service/super-admin.service";
+import _ from "lodash";
 
 const SuperAdminService = new superAdminService();
 export class SuperAdminController {
     public async user(req: Request, res: Response) {
     try {
-      const {
-        fullName, email, password, role,
-        jobTitle, employeeId, contactNumber, dateOfBirth,
-        bloodGroup, department, workSchedule, joiningDate,
-        projects, sendWelcomeEmail, requirePasswordChange,
-      } = req.body;
-
-      // AM creating user → auto-set manager_id from JWT
-      const callerRole = req.user?.role;
-      const manager_id = callerRole === "AM" ? req.user?.id : req.body.manager_id;
-
-      const data = await SuperAdminService.addUser({
-        fullName,
-        email,
-        password,
-        role,
-        manager_id,
-        job_title: jobTitle,
-        employee_id: employeeId,
-        contact_number: contactNumber,
-        date_of_birth: dateOfBirth,
-        blood_group: bloodGroup,
-        department,
-        work_schedule: workSchedule,
-        joining_date: joiningDate,
-        require_password_change: requirePasswordChange,
-        projects,
-        sendWelcomeEmail,
-      });
+      const manager_id = req.user?.id;
+      const data = await SuperAdminService.addUser(req.body,manager_id);
       sendResponse(res, HTTP_statusCode.CREATED, {
         success: true,
         message: "User created successfully",
@@ -57,7 +31,7 @@ export class SuperAdminController {
   public async upsertDomain(req: Request, res: Response) {
     try {
       const { id, name, description } = req.body;
-      const data = await SuperAdminService.upsertDomain({ id, name, description });
+      const data = await SuperAdminService.upsertDomain({ userId: id, name, description });
       sendResponse(res, id ? HTTP_statusCode.OK : HTTP_statusCode.CREATED, {
         success: true,
         message: id ? "Domain updated successfully" : "Domain created successfully",
@@ -253,10 +227,20 @@ export class SuperAdminController {
         limit: Math.min(Math.max(parseInt(limit as string) || 10, 1), 100),
       });
 
+      const users = data.users.map((user: any) => ({
+        ..._.pick(user, ["id", "fullName", "email", "role", "department", "lastSeenAt"]),
+        projects: user.projects?.map((p: any) => _.pick(p, ["id", "name"])),
+      }));
+
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "Fetched successful",
-        data,
+        data: {
+          users,
+          totalRecords: data.totalRecords,
+          totalPages: data.totalPages,
+          currentPage: data.currentPage,
+        },
       });
     } catch (error:any) {
        sendResponse(res, HTTP_statusCode.unAuthorized, {
@@ -267,12 +251,42 @@ export class SuperAdminController {
   }
   public async getUser(req:Request,res:Response){
     try {
-      const {id}=req.query
-      const data=await SuperAdminService.getUserById(id as string)
-        sendResponse(res, HTTP_statusCode.OK, {
+      const id = req.user?.id;
+      const result = await SuperAdminService.getUserById(id as string);
+
+      if (!result || !result.user) {
+        sendResponse(res, HTTP_statusCode.NotFound, {
+          success: false,
+          message: "User not found",
+        });
+        return;
+      }
+
+      const plain = result.user.get({ plain: true }) as any;
+      const manager = plain.manager;
+
+      const response = {
+        ..._.pick(plain, [
+          "id", "fullName", "email", "role", "department",
+          "isBlocked", "lastSeenAt",
+        ]),
+        employeeId: plain.employee_id,
+        jobTitle: plain.job_title,
+        dateOfBirth: plain.date_of_birth,
+        bloodGroup: plain.blood_group,
+        contactNumber: plain.contact_number,
+        joiningDate: plain.joining_date,
+        workSchedule: plain.work_schedule,
+        reportingManager: manager
+          ? _.pick(manager, ["id", "fullName", "job_title"])
+          : null,
+        departmentMembers: result.departmentMembers,
+        projects: plain.projects?.map((p: any) => _.pick(p, ["id", "name"])),
+      };
+
+      sendResponse(res, HTTP_statusCode.OK, {
         success: true,
-        message: "Fetched successful",
-        data,
+        data: response,
       });
     } catch (error:any) {
     sendResponse(res, HTTP_statusCode.unAuthorized, {

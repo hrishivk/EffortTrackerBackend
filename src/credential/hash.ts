@@ -20,8 +20,7 @@ export class credentialHashing {
         : (() => {
             throw new Error("Secret key not found");
           })();
-      const accessToken = jwt.sign(payload, envConfig.ACCESS_SECRET, { expiresIn: "5m" });
-
+      const accessToken = jwt.sign(payload, envConfig.ACCESS_SECRET, { expiresIn: "15m" });
 
       return { accessToken };
     } catch (error) {
@@ -48,10 +47,10 @@ export class credentialHashing {
             throw new Error("refreshTokenSecret  key not found");
           })();
       const accessToken = jwt.sign(payload, envConfig.ACCESS_SECRET, {
-        expiresIn: "5m",
+        expiresIn: "15m",
       });
       const refreshToken = jwt.sign(payload, envConfig.REFRESH_SECRET, {
-        expiresIn: "2d",
+        expiresIn: "16h",
       });
       return { accessToken, refreshToken };
     } catch (error) {

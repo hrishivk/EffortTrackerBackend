@@ -483,7 +483,43 @@ export class superAdminRepository {
   }
   public async getuser(id: string) {
     try {
-      return await User.findOne({ where: { id: id } });
+      const user = await User.findOne({
+        where: { id },
+        attributes: { exclude: ["password"] },
+        include: [
+          {
+            model: User,
+            as: "manager",
+            attributes: ["id", "fullName", "job_title"],
+          },
+          {
+            model: Project,
+            as: "projects",
+            attributes: ["id", "name"],
+            through: { attributes: [] },
+          },
+        ],
+      });
+
+      if (!user) return null;
+
+      // Fetch department members (same department, excluding self)
+      let departmentMembers: { count: number; members: any[] } = { count: 0, members: [] };
+      if (user.department) {
+        const members = await User.findAll({
+          where: {
+            department: user.department,
+            id: { [Op.ne]: id },
+          },
+          attributes: ["id", "fullName"],
+        });
+        departmentMembers = {
+          count: members.length,
+          members: members.map((m: any) => ({ id: m.id, fullName: m.fullName })),
+        };
+      }
+
+      return { user, departmentMembers };
     } catch (error) {
       throw error;
     }
@@ -602,7 +638,7 @@ export class superAdminRepository {
   }
   public async findDomainById(id: string) {
     try {
-      return await Domain.findOne({ where: { id } });
+      return await Domain.findOne({ where: { id} });
     } catch (error) {
       throw error;
     }

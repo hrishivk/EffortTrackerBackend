@@ -13,14 +13,14 @@ export class AuthController {
       res.cookie("rhythmrx_auth", data.token?.accessToken, {
         httpOnly: true,
         secure: true,
-        maxAge: 5 * 60 * 1000,
+        maxAge: 15 * 60 * 1000,
         sameSite: "none",
         path: "/",
       });
       res.cookie("rhythmrx_refresh_auth", data.token?.refreshToken, {
         httpOnly: true,
         secure: true,
-        maxAge: 7 * 24 * 60 * 60 * 1000,
+        maxAge: 16 * 60 * 60 * 1000,
         sameSite: "none",
         path: "/",
       });

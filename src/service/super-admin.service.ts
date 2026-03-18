@@ -3,16 +3,27 @@ import { AddUserDTO } from "../types/user.types";
 import { UserRepository } from "../repositories/user.repository";
 import { DomainUpsertDTO } from "../types/domain.types";
 import { ProjectUpsertDTO } from "../types/project.types";
+import { sendWelcomeEmail } from "../utils/mailer";
 
 const SuperAdminRepository = new superAdminRepository();
 const userRepository = new UserRepository();
 export class superAdminService {
-    public async addUser(data: AddUserDTO): Promise<any> {
+  public async addUser(data: AddUserDTO,manager_id?:string): Promise<any> {
     const {
-      fullName, email, password, role, manager_id,
-      job_title, employee_id, contact_number, date_of_birth,
-      blood_group, department, work_schedule, joining_date,
-      require_password_change, projects,
+      fullName,
+      email,
+      password,
+      role,
+      job_title,
+      employee_id,
+      contact_number,
+      date_of_birth,
+      blood_group,
+      department,
+      work_schedule,
+      joining_date,
+      require_password_change,
+      projects,
     } = data;
 
     if (!password) {
@@ -23,7 +34,8 @@ export class superAdminService {
       throw new Error("Email already exists.");
     }
     if (employee_id) {
-      const empExists = await SuperAdminRepository.findUserByEmployeeId(employee_id);
+      const empExists =
+        await SuperAdminRepository.findUserByEmployeeId(employee_id);
       if (empExists) {
         throw new Error("Employee ID already exists.");
       }
@@ -36,25 +48,35 @@ export class superAdminService {
         email: email.trim(),
         password: hashedPassword,
         role: role.toUpperCase(),
-        manager_id: manager_id ,
-        job_title: job_title?.trim() ,
-        employee_id: employee_id?.trim() ,
-        contact_number: contact_number?.trim() ,
-        date_of_birth: date_of_birth ,
-        blood_group: blood_group?.trim() ,
-        department: department?.trim() ,
+        manager_id: manager_id,
+        job_title: job_title?.trim(),
+        employee_id: employee_id?.trim(),
+        contact_number: contact_number?.trim(),
+        date_of_birth: date_of_birth,
+        blood_group: blood_group?.trim(),
+        department: department?.trim(),
         work_schedule: work_schedule?.trim(),
-        joining_date: joining_date ,
+        joining_date: joining_date,
         require_password_change: require_password_change || false,
         lastSeenAt: "No login activity recorded",
       };
       const createdUser = await userRepository.createUser(newUser);
       if (projects && projects.trim()) {
-        const projectIds = projects.split(",").map((id: string) => id.trim()).filter(Boolean);
+        const projectIds = projects
+          .split(",")
+          .map((id: string) => id.trim())
+          .filter(Boolean);
         for (const pid of projectIds) {
           await SuperAdminRepository.assignMembers(pid, [createdUser.id]);
         }
       }
+
+      if (data.sendWelcomeEmail) {
+        sendWelcomeEmail(email, fullName, password).catch((err) =>
+          console.error("Failed to send welcome email:", err.message),
+        );
+      }
+
       return createdUser;
     } catch (error: any) {
       console.error("Error creating user:", error);
@@ -63,31 +85,34 @@ export class superAdminService {
   }
   public async upsertDomain(data: DomainUpsertDTO) {
     try {
-      const { id, name, description } = data;
+      const { userId, name, description } = data;
 
       if (!name || !name.trim()) {
         throw new Error("Domain name is required");
       }
-      if (id) {
-        const existingDomain = await SuperAdminRepository.findDomainById(id);
+      if (userId) {
+        const existingDomain = await SuperAdminRepository.findDomainById(userId);
         if (!existingDomain) {
           throw new Error("Domain not found");
         }
 
-     
         if (name.trim() !== existingDomain.name) {
-          const duplicateName = await SuperAdminRepository.findDomainByName(name.trim());
+          const duplicateName = await SuperAdminRepository.findDomainByName(
+            name.trim(),
+          );
           if (duplicateName) {
             throw new Error("Domain with this name already exists");
           }
         }
 
-        return await SuperAdminRepository.updateDomain(id, {
+        return await SuperAdminRepository.updateDomain(userId, {
           name: name.trim(),
           description: description?.trim(),
         });
       }
-      const existDomain = await SuperAdminRepository.findDomainByName(name.trim());
+      const existDomain = await SuperAdminRepository.findDomainByName(
+        name.trim(),
+      );
       if (existDomain) {
         throw new Error("Domain with this name already exists");
       }
@@ -116,37 +141,37 @@ export class superAdminService {
       throw error;
     }
   }
-  public async getUserById(id:string) {
+  public async getUserById(id: string) {
     try {
-      return await SuperAdminRepository.getuser(id)
+      return await SuperAdminRepository.getuser(id);
     } catch (error) {
       throw error;
     }
   }
-  public async countTask(role:string,date:string) {
+  public async countTask(role: string, date: string) {
     try {
-      return await SuperAdminRepository.fetchTaskCount(role,date)
+      return await SuperAdminRepository.fetchTaskCount(role, date);
     } catch (error) {
       throw error;
     }
   }
-  public async deletetUserById(id:string) {
+  public async deletetUserById(id: string) {
     try {
-      return await SuperAdminRepository.deleteuser(id)
+      return await SuperAdminRepository.deleteuser(id);
     } catch (error) {
       throw error;
     }
   }
-  public async unBlockUserById(id:string) {
+  public async unBlockUserById(id: string) {
     try {
-      return await SuperAdminRepository.unBlockUser(id)
+      return await SuperAdminRepository.unBlockUser(id);
     } catch (error) {
       throw error;
     }
   }
-  public async BlockUserById(id:string) {
+  public async BlockUserById(id: string) {
     try {
-      return await SuperAdminRepository.BlockUser(id)
+      return await SuperAdminRepository.BlockUser(id);
     } catch (error) {
       throw error;
     }
@@ -159,9 +184,21 @@ export class superAdminService {
     }
   }
 
-  public async getAllProjects(userId?: string, userRole?: string, search?: string, page?: number, limit?: number) {
+  public async getAllProjects(
+    userId?: string,
+    userRole?: string,
+    search?: string,
+    page?: number,
+    limit?: number,
+  ) {
     try {
-      return await SuperAdminRepository.listAllProjects(userId, userRole, search, page, limit);
+      return await SuperAdminRepository.listAllProjects(
+        userId,
+        userRole,
+        search,
+        page,
+        limit,
+      );
     } catch (error) {
       throw error;
     }
@@ -182,24 +219,33 @@ export class superAdminService {
     }
   }
 
-  public async getAllDomainProject(){
+  public async getAllDomainProject() {
     try {
-      return await SuperAdminRepository.getDomainHierarchy()
+      return await SuperAdminRepository.getDomainHierarchy();
     } catch (error) {
-      throw error
+      throw error;
     }
   }
-  public async updateOneUser(data:AddUserDTO){
- 
+  public async updateOneUser(data: AddUserDTO) {
     try {
-      return await SuperAdminRepository.editUser(data)
+      return await SuperAdminRepository.editUser(data);
     } catch (error) {
-      throw error
+      throw error;
     }
   }
   public async upsertProject(data: ProjectUpsertDTO) {
     try {
-      const { id, name, description, domain_id, client_department, start_date, end_date, status, created_by } = data;
+      const {
+        id,
+        name,
+        description,
+        domain_id,
+        client_department,
+        start_date,
+        end_date,
+        status,
+        created_by,
+      } = data;
 
       if (!name || !name.trim()) {
         throw new Error("Project name is required");
@@ -228,7 +274,10 @@ export class superAdminService {
           throw new Error("Project not found");
         }
         if (name.trim() !== existing.name) {
-          const duplicate = await SuperAdminRepository.findProjectByName(name.trim(), id);
+          const duplicate = await SuperAdminRepository.findProjectByName(
+            name.trim(),
+            id,
+          );
           if (duplicate) {
             throw new Error("Project with this name already exists");
           }
@@ -236,15 +285,15 @@ export class superAdminService {
 
         return await SuperAdminRepository.updateProject(id, projectData);
       }
-      const existProject = await SuperAdminRepository.findProjectByName(name.trim());
+      const existProject = await SuperAdminRepository.findProjectByName(
+        name.trim(),
+      );
       if (existProject) {
         throw new Error("Project with this name already exists");
       }
 
       if (created_by) projectData.created_by = created_by;
       const project = await SuperAdminRepository.createProject(projectData);
-
-      // Auto-assign the creator as a project member
       if (created_by) {
         await SuperAdminRepository.assignMembers(project.id, [created_by]);
       }
@@ -261,9 +310,14 @@ export class superAdminService {
       if (!status) throw new Error("Status is required");
       const validStatuses = ["active", "on_hold", "paused", "completed"];
       if (!validStatuses.includes(status)) {
-        throw new Error("Invalid status. Must be: active, on_hold, paused, completed");
+        throw new Error(
+          "Invalid status. Must be: active, on_hold, paused, completed",
+        );
       }
-      return await SuperAdminRepository.updateProjectStatus(id, status as "active" | "on_hold" | "paused" | "completed");
+      return await SuperAdminRepository.updateProjectStatus(
+        id,
+        status as "active" | "on_hold" | "paused" | "completed",
+      );
     } catch (error) {
       throw error;
     }
@@ -281,7 +335,8 @@ export class superAdminService {
   public async assignProjectMembers(project_id: string, user_ids: string[]) {
     try {
       if (!project_id) throw new Error("Project id is required");
-      if (!user_ids || !user_ids.length) throw new Error("At least one user is required");
+      if (!user_ids || !user_ids.length)
+        throw new Error("At least one user is required");
       return await SuperAdminRepository.assignMembers(project_id, user_ids);
     } catch (error) {
       throw error;
@@ -291,7 +346,8 @@ export class superAdminService {
   public async removeProjectMembers(project_id: string, user_ids: string[]) {
     try {
       if (!project_id) throw new Error("Project id is required");
-      if (!user_ids || !user_ids.length) throw new Error("At least one user is required");
+      if (!user_ids || !user_ids.length)
+        throw new Error("At least one user is required");
       return await SuperAdminRepository.removeMembers(project_id, user_ids);
     } catch (error) {
       throw error;
@@ -306,5 +362,4 @@ export class superAdminService {
       throw error;
     }
   }
-
 }

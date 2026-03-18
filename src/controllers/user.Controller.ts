@@ -39,7 +39,9 @@ export class userController {
   }
   public async taskList(req: Request, res: Response) {
     try {
-      const { date, id, role, assigned_to, project, page = "1", limit = "10" } = req.query;
+      const { date, assigned_to, project, page = "1", limit = "10" } = req.query;
+      const id = req.user?.id;
+      const role = req.user?.role;
       const result = await UserService.listTask({
         date, id, role, assigned_to, project,
         page: parseInt(page as string),

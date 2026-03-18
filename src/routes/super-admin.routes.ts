@@ -9,9 +9,9 @@ export class SuperAdminRoute {
   constructor() {
     this.router.post("/add-user", roleGuards.AdminOrSuperAdmin, this.controller.user);
     this.router.get("/list-users", roleGuards.AdminOrSuperAdmin, this.controller.fetchUsers);
-    this.router.get("/user", roleGuards.SuperAdmin, this.controller.getUser);
+    this.router.get("/user", roleGuards.allAcess, this.controller.getUser);
     this.router.patch("/edit-user", roleGuards.SuperAdmin, this.controller.updateUser);
-    this.router.delete("/delete-user", roleGuards.SuperAdmin, this.controller.deleteUser);
+    this.router.delete("/delete-user", roleGuards.AdminOrSuperAdmin, this.controller.deleteUser);
     this.router.patch("/block-user", roleGuards.SuperAdmin, this.controller.blockUser);
     this.router.patch("/unblock-user", roleGuards.SuperAdmin, this.controller.unBlock);
     this.router.post("/domain", roleGuards.AdminOrSuperAdmin, this.controller.upsertDomain);
@@ -30,5 +30,5 @@ export class SuperAdminRoute {
 
   public getRouter(): Router {
     return this.router;
-  }
+  }      
 }
