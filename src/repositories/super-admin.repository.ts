@@ -2,7 +2,8 @@ import { Domain } from "../connection/models/domain";
 import { Project } from "../connection/models/project";
 import { ProjectMember } from "../connection/models/project_member";
 import { User } from "../connection/models/user";
-import { col, fn, Op, Sequelize, where } from "sequelize";
+import { DailyTaskLog } from "../connection/models/daily_task_logs";
+import { col, fn, literal, Op, Sequelize, where } from "sequelize";
 import { AddUserDTO } from "../types/user.types";
 import { Task } from "../connection/models/tasks";
 
@@ -526,13 +527,304 @@ export class superAdminRepository {
   }
   public async fetchTaskCount(role: string, date: string) {
     try {
-      return await Task.findAll({
+      const statusCounts: any = await Task.findAll({
         attributes: [
           "status",
           [Sequelize.fn("COUNT", Sequelize.col("status")), "count"],
         ],
         group: ["status"],
         raw: true,
+      });
+
+      const counts: Record<string, number> = {
+        yet_to_start: 0,
+        in_progress: 0,
+        completed: 0,
+        blocked: 0,
+      };
+      let totalTasks = 0;
+      statusCounts.forEach((row: any) => {
+        const c = Number(row.count) || 0;
+        counts[row.status] = c;
+        totalTasks += c;
+      });
+
+      // Calculate total hours from completed tasks that have start_time and end_time
+      const hoursResult: any = await Task.findAll({
+        attributes: [
+          [
+            fn(
+              "COALESCE",
+              fn(
+                "SUM",
+                literal(
+                  `EXTRACT(EPOCH FROM ("end_time" - "start_time")) / 3600`
+                )
+              ),
+              0
+            ),
+            "total_hours",
+          ],
+        ],
+        where: {
+          start_time: { [Op.ne]: null },
+          end_time: { [Op.ne]: null },
+        },
+        raw: true,
+      });
+
+      const totalDecimalHours = Number(hoursResult[0]?.total_hours) || 0;
+      const hours = Math.floor(totalDecimalHours);
+      const minutes = Math.round((totalDecimalHours - hours) * 60);
+      const totalHours = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+
+      return {
+        totalTasks,
+        yetToStart: counts.yet_to_start,
+        inProgress: counts.in_progress,
+        completed: counts.completed,
+        blocked: counts.blocked,
+        totalHours,
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async fetchTaskCompletionTrend() {
+    try {
+      const results: any = await Task.findAll({
+        attributes: [
+          [fn("TO_CHAR", col("updated_at"), "Mon"), "month"],
+          [fn("EXTRACT", literal("MONTH FROM updated_at")), "month_num"],
+          [fn("EXTRACT", literal("YEAR FROM updated_at")), "year"],
+          [fn("COUNT", col("id")), "completed"],
+        ],
+        where: { status: "completed" },
+        group: [
+          fn("TO_CHAR", col("updated_at"), "Mon"),
+          fn("EXTRACT", literal("MONTH FROM updated_at")),
+          fn("EXTRACT", literal("YEAR FROM updated_at")),
+        ],
+        order: [
+          [fn("EXTRACT", literal("YEAR FROM updated_at")), "ASC"],
+          [fn("EXTRACT", literal("MONTH FROM updated_at")), "ASC"],
+        ],
+        raw: true,
+      });
+
+      return results.map((r: any) => ({
+        month: r.month?.trim(),
+        completed: Number(r.completed) || 0,
+      }));
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async fetchTeamPerformance() {
+    try {
+      // Get all non-SP, non-blocked users
+      const users = await User.findAll({
+        where: {
+          role: { [Op.ne]: "SP" },
+          isBlocked: false,
+        },
+        attributes: ["id", "fullName"],
+        raw: true,
+      });
+
+      if (users.length === 0) return [];
+
+      const userIds = users.map((u: any) => u.id);
+
+      // Get assigned project count per user
+      const projectCounts: any = await ProjectMember.findAll({
+        attributes: [
+          "user_id",
+          [fn("COUNT", fn("DISTINCT", col("project_id"))), "project_count"],
+        ],
+        where: { user_id: { [Op.in]: userIds } },
+        group: ["user_id"],
+        raw: true,
+      });
+      const projectMap = new Map(
+        projectCounts.map((r: any) => [r.user_id, Number(r.project_count) || 0])
+      );
+
+      // Get task stats per user via daily_task_logs -> tasks
+      const taskStats: any = await Task.findAll({
+        attributes: [
+          [col("dailyLog.assigned_to"), "user_id"],
+          "status",
+          [fn("COUNT", col("Task.id")), "count"],
+        ],
+        include: [
+          {
+            model: DailyTaskLog,
+            as: "dailyLog",
+            attributes: [],
+            where: { assigned_to: { [Op.in]: userIds } },
+          },
+        ],
+        group: [col("dailyLog.assigned_to"), "Task.status"],
+        raw: true,
+      });
+
+      // Build per-user stats
+      const userStatsMap = new Map<
+        string,
+        { yetToStart: number; inProgress: number; completed: number; blocked: number; total: number }
+      >();
+      taskStats.forEach((row: any) => {
+        const uid = row.user_id;
+        if (!userStatsMap.has(uid)) {
+          userStatsMap.set(uid, { yetToStart: 0, inProgress: 0, completed: 0, blocked: 0, total: 0 });
+        }
+        const s = userStatsMap.get(uid)!;
+        const c = Number(row.count) || 0;
+        s.total += c;
+        if (row.status === "yet_to_start") s.yetToStart += c;
+        else if (row.status === "in_progress") s.inProgress += c;
+        else if (row.status === "completed") s.completed += c;
+        else if (row.status === "blocked") s.blocked += c;
+      });
+
+      // Get total hours per user from tasks with start/end times
+      const hoursStats: any = await Task.findAll({
+        attributes: [
+          [col("dailyLog.assigned_to"), "user_id"],
+          [
+            fn(
+              "COALESCE",
+              fn("SUM", literal(`EXTRACT(EPOCH FROM ("Task"."end_time" - "Task"."start_time")) / 3600`)),
+              0
+            ),
+            "total_hours",
+          ],
+        ],
+        include: [
+          {
+            model: DailyTaskLog,
+            as: "dailyLog",
+            attributes: [],
+            where: { assigned_to: { [Op.in]: userIds } },
+          },
+        ],
+        where: {
+          start_time: { [Op.ne]: null },
+          end_time: { [Op.ne]: null },
+        },
+        group: [col("dailyLog.assigned_to")],
+        raw: true,
+      });
+      const hoursMap = new Map(
+        hoursStats.map((r: any) => [r.user_id, Number(r.total_hours) || 0])
+      );
+
+      return users.map((u: any) => {
+        const stats = userStatsMap.get(u.id) || {
+          yetToStart: 0, inProgress: 0, completed: 0, blocked: 0, total: 0,
+        };
+        const decHours = Number(hoursMap.get(u.id) || 0);
+        const hrs = Math.floor(decHours);
+        const mins = Math.round((decHours - hrs) * 60) as number;
+        const totalHours = `${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
+        const efficiency = stats.total === 0 ? 0 : Math.round((stats.completed / stats.total) * 100);
+
+        return {
+          userId: u.id,
+          name: u.fullName,
+          assignedProjects: projectMap.get(u.id) || 0,
+          yetToStart: stats.yetToStart,
+          inProgress: stats.inProgress,
+          completed: stats.completed,
+          totalHours,
+          efficiency,
+        };
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async fetchRecentActivity(limit: number = 10) {
+    try {
+      const recentTasks: any = await Task.findAll({
+        attributes: ["id", "description", "status", "updated_at"],
+        include: [
+          {
+            model: DailyTaskLog,
+            as: "dailyLog",
+            attributes: ["assigned_to"],
+            include: [
+              {
+                model: User,
+                as: "assignedUser",
+                attributes: ["fullName"],
+              },
+            ],
+          },
+        ],
+        order: [["updated_at", "DESC"]],
+        limit,
+      });
+
+      return recentTasks.map((t: any) => {
+        const plain = t.get({ plain: true });
+        return {
+          user: plain.dailyLog?.assignedUser?.fullName || "Unknown",
+          action: plain.status === "completed"
+            ? "completed"
+            : plain.status === "in_progress"
+              ? "started working on"
+              : plain.status === "blocked"
+                ? "marked as blocked"
+                : "updated",
+          task: plain.description,
+          time: plain.updated_at,
+        };
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async fetchUpcomingDeadlines(limit: number = 10) {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const tasks: any = await Task.findAll({
+        attributes: ["id", "description", "end_time"],
+        where: {
+          end_time: { [Op.gte]: today },
+          status: { [Op.ne]: "completed" },
+        },
+        include: [
+          {
+            model: Project,
+            as: "project",
+            attributes: ["name"],
+          },
+        ],
+        order: [["end_time", "ASC"]],
+        limit,
+        raw: false,
+      });
+
+      return tasks.map((t: any) => {
+        const plain = t.get({ plain: true });
+        const dueDate = new Date(plain.end_time);
+        const diffMs = dueDate.getTime() - today.getTime();
+        const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+        return {
+          task: plain.description,
+          project: plain.project?.name || "Unassigned",
+          dueDate: dueDate.toISOString().split("T")[0],
+          daysLeft,
+        };
       });
     } catch (error) {
       throw error;

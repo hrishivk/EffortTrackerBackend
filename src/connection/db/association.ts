@@ -4,6 +4,10 @@ import initProjectModel, { Project } from "../models/project";
 import initProjectMemberModel, { ProjectMember } from "../models/project_member";
 import { initTaskModel, Task } from "../models/tasks";
 import initUserModel, { User } from "../models/user";
+import initLeaveModel, { Leave } from "../models/leave";
+import initLeaveBalanceModel, { LeaveBalance } from "../models/leave_balance";
+import initNotificationModel, { Notification } from "../models/notification";
+import initAttendanceModel, { Attendance } from "../models/attendance";
 import { Sequelize } from "sequelize";
 
 export class Associations {
@@ -108,6 +112,48 @@ export class Associations {
       foreignKey: "project_id",
       as: "tasks",
     });
+
+    // Leave <-> User
+    Leave.belongsTo(User, {
+      foreignKey: "user_id",
+      as: "applicant",
+      onDelete: "CASCADE",
+    });
+    Leave.belongsTo(User, {
+      foreignKey: "manager_id",
+      as: "manager",
+    });
+    Leave.belongsTo(User, {
+      foreignKey: "admin_id",
+      as: "admin",
+    });
+    User.hasMany(Leave, {
+      foreignKey: "user_id",
+      as: "leaves",
+    });
+
+    // LeaveBalance <-> User
+    LeaveBalance.belongsTo(User, {
+      foreignKey: "user_id",
+      as: "user",
+      onDelete: "CASCADE",
+    });
+    User.hasMany(LeaveBalance, {
+      foreignKey: "user_id",
+      as: "leaveBalances",
+    });
+
+    // Notification <-> User
+    Notification.belongsTo(User, {
+      foreignKey: "user_id",
+      as: "user",
+      onDelete: "CASCADE",
+    });
+    User.hasMany(Notification, {
+      foreignKey: "user_id",
+      as: "notifications",
+    });
+
   }
 
   static initModels(sequelize: Sequelize) {
@@ -117,5 +163,9 @@ export class Associations {
     initProjectMemberModel(sequelize);
     initTaskModel(sequelize);
     initDailyTaskLogModel(sequelize);
+    initLeaveModel(sequelize);
+    initLeaveBalanceModel(sequelize);
+    initNotificationModel(sequelize);
+    initAttendanceModel(sequelize);
   }
 }

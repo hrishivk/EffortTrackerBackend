@@ -7,7 +7,7 @@ export class SuperAdminRoute {
   private controller = new SuperAdminController();
 
   constructor() {
-    this.router.post("/add-user", roleGuards.AdminOrSuperAdmin, this.controller.user);
+    this.router.post("/add-user", this.controller.user);
     this.router.get("/list-users", roleGuards.AdminOrSuperAdmin, this.controller.fetchUsers);
     this.router.get("/user", roleGuards.allAcess, this.controller.getUser);
     this.router.patch("/edit-user", roleGuards.SuperAdmin, this.controller.updateUser);
@@ -25,7 +25,11 @@ export class SuperAdminRoute {
     this.router.post("/project-members", roleGuards.AdminOrSuperAdmin, this.controller.assignMembers);
     this.router.delete("/project-members", roleGuards.AdminOrSuperAdmin, this.controller.removeMembers);
     this.router.get("/project-members", roleGuards.AdminOrSuperAdmin, this.controller.getMembers);
-    this.router.get("/task-count", roleGuards.SuperAdmin, this.controller.getTaskCount);
+    this.router.get("/task-count", roleGuards.AdminOrSuperAdmin, this.controller.getTaskCount);
+    this.router.get("/task-completion-trend", roleGuards.AdminOrSuperAdmin, this.controller.getTaskCompletionTrend);
+    this.router.get("/team-performance", roleGuards.AdminOrSuperAdmin, this.controller.getTeamPerformance);
+    this.router.get("/recent-activity", roleGuards.AdminOrSuperAdmin, this.controller.getRecentActivity);
+    this.router.get("/upcoming-deadlines", roleGuards.AdminOrSuperAdmin, this.controller.getUpcomingDeadlines);
   }
 
   public getRouter(): Router {

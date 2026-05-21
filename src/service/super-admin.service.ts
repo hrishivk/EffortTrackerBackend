@@ -57,7 +57,7 @@ export class superAdminService {
         department: department?.trim(),
         work_schedule: work_schedule?.trim(),
         joining_date: joining_date,
-        require_password_change: require_password_change || false,
+        require_password_change: require_password_change ,
         lastSeenAt: "No login activity recorded",
       };
       const createdUser = await userRepository.createUser(newUser);
@@ -151,6 +151,34 @@ export class superAdminService {
   public async countTask(role: string, date: string) {
     try {
       return await SuperAdminRepository.fetchTaskCount(role, date);
+    } catch (error) {
+      throw error;
+    }
+  }
+  public async getTaskCompletionTrend() {
+    try {
+      return await SuperAdminRepository.fetchTaskCompletionTrend();
+    } catch (error) {
+      throw error;
+    }
+  }
+  public async getTeamPerformance() {
+    try {
+      return await SuperAdminRepository.fetchTeamPerformance();
+    } catch (error) {
+      throw error;
+    }
+  }
+  public async getRecentActivity(limit?: number) {
+    try {
+      return await SuperAdminRepository.fetchRecentActivity(limit);
+    } catch (error) {
+      throw error;
+    }
+  }
+  public async getUpcomingDeadlines(limit?: number) {
+    try {
+      return await SuperAdminRepository.fetchUpcomingDeadlines(limit);
     } catch (error) {
       throw error;
     }

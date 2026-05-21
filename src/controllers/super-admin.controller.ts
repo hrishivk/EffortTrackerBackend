@@ -311,7 +311,72 @@ export class SuperAdminController {
         message: error.message || "Fetching user failed",
       });
     }
+  }
 
+  public async getTaskCompletionTrend(req: Request, res: Response) {
+    try {
+      const data = await SuperAdminService.getTaskCompletionTrend();
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "Task completion trend fetched successfully",
+        data,
+      });
+    } catch (error: any) {
+      sendResponse(res, HTTP_statusCode.InternalServerError, {
+        success: false,
+        message: error.message || "Fetching task completion trend failed",
+      });
+    }
+  }
+
+  public async getTeamPerformance(req: Request, res: Response) {
+    try {
+      const data = await SuperAdminService.getTeamPerformance();
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "Team performance fetched successfully",
+        data,
+      });
+    } catch (error: any) {
+      sendResponse(res, HTTP_statusCode.InternalServerError, {
+        success: false,
+        message: error.message || "Fetching team performance failed",
+      });
+    }
+  }
+
+  public async getRecentActivity(req: Request, res: Response) {
+    try {
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 10;
+      const data = await SuperAdminService.getRecentActivity(limit);
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "Recent activity fetched successfully",
+        data,
+      });
+    } catch (error: any) {
+      sendResponse(res, HTTP_statusCode.InternalServerError, {
+        success: false,
+        message: error.message || "Fetching recent activity failed",
+      });
+    }
+  }
+
+  public async getUpcomingDeadlines(req: Request, res: Response) {
+    try {
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 10;
+      const data = await SuperAdminService.getUpcomingDeadlines(limit);
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "Upcoming deadlines fetched successfully",
+        data,
+      });
+    } catch (error: any) {
+      sendResponse(res, HTTP_statusCode.InternalServerError, {
+        success: false,
+        message: error.message || "Fetching upcoming deadlines failed",
+      });
+    }
   }
   public async deleteUser(req:Request,res:Response){
     try {

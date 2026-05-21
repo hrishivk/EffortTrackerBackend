@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(timeout 10 npx tsx:*)"
+      "Bash(timeout 10 npx tsx:*)",
+      "Bash(npm run *)",
+      "PowerShell(Get-NetTCPConnection *)"
     ]
   }
 }
