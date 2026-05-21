@@ -213,6 +213,8 @@ export class SuperAdminController {
 
   public async fetchUsers(req:Request,res:Response){
     try {
+         const manager_id = req.user?.id;
+         console.log("enterrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrmamangeerrrrrrrrrrrrrrrrrrrrr",manager_id)
       const { search, role, isBlocked, project_id, page, limit } = req.query;
       const userRole = req.user?.role;
       const userId = req.user?.id;

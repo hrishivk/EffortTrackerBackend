@@ -26,6 +26,8 @@ export class superAdminService {
       projects,
     } = data;
 
+    const resolvedManagerId =  manager_id;
+
     if (!password) {
       throw new Error("Password is required.");
     }
@@ -48,7 +50,7 @@ export class superAdminService {
         email: email.trim(),
         password: hashedPassword,
         role: role.toUpperCase(),
-        manager_id: manager_id,
+        manager_id: resolvedManagerId,
         job_title: job_title?.trim(),
         employee_id: employee_id?.trim(),
         contact_number: contact_number?.trim(),
@@ -60,6 +62,7 @@ export class superAdminService {
         require_password_change: require_password_change ,
         lastSeenAt: "No login activity recorded",
       };
+      console.log("new userrrrrrrrrrrrrrrrrrrrrrrr",newUser)
       const createdUser = await userRepository.createUser(newUser);
       if (projects && projects.trim()) {
         const projectIds = projects

@@ -7,7 +7,7 @@ export class SuperAdminRoute {
   private controller = new SuperAdminController();
 
   constructor() {
-    this.router.post("/add-user", this.controller.user);
+    this.router.post("/add-user", roleGuards.AdminOrSuperAdmin, this.controller.user);
     this.router.get("/list-users", roleGuards.AdminOrSuperAdmin, this.controller.fetchUsers);
     this.router.get("/user", roleGuards.allAcess, this.controller.getUser);
     this.router.patch("/edit-user", roleGuards.SuperAdmin, this.controller.updateUser);

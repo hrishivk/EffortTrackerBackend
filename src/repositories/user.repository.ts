@@ -104,6 +104,8 @@ export class UserRepository {
 
   public async createUser(userData: any) {
     try {
+
+      console.log('userdataaaaa',userData)
       return await User.create(userData);
     } catch (error) {
       console.error("Error creating user:", error);

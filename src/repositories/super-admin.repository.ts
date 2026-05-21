@@ -367,6 +367,7 @@ export class superAdminRepository {
       const { search, role, isBlocked, project_id, manager_id, page, limit } = filters;
       const whereClause: any = {
         id: { [Op.ne]: "2f3xfkSN5zHdYa5" },
+        role: { [Op.ne]: "SP" },
       };
 
       if (manager_id) {
@@ -379,7 +380,7 @@ export class superAdminRepository {
           { email: { [Op.iLike]: `%${search}%` } },
         ];
       }
-      if (role) {
+      if (role && role.toUpperCase() !== "SP") {
         whereClause.role = role.toUpperCase();
       }
 
