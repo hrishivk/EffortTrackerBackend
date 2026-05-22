@@ -1,4 +1,5 @@
 import { Domain } from "../connection/models/domain";
+import { DomainAssignment } from "../connection/models/domain_assignment";
 import { Project } from "../connection/models/project";
 import { ProjectMember } from "../connection/models/project_member";
 import { User } from "../connection/models/user";
@@ -166,7 +167,57 @@ export class superAdminRepository {
   }
   public async listAllDomain() {
     try {
-      return await Domain.findAll();
+      return await Domain.findAll({
+        include: [
+          {
+            model: User,
+            as: "creator",
+            attributes: ["id", "fullName"],
+          },
+          {
+            model: User,
+            as: "assignedUsers",
+            attributes: ["id", "fullName"],
+            through: { attributes: [] },
+          },
+        ],
+        order: [["created_at", "DESC"]],
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async listDomainsForUser(userId: string) {
+    try {
+      return await Domain.findAll({
+        include: [
+          {
+            model: User,
+            as: "creator",
+            attributes: ["id", "fullName"],
+          },
+          {
+            model: User,
+            as: "assignedUsers",
+            attributes: ["id", "fullName"],
+            through: { attributes: [] },
+            required: true,
+            where: { id: userId },
+          },
+        ],
+        order: [["created_at", "DESC"]],
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async assignDomainMembers(domain_id: string, user_ids: string[]) {
+    try {
+      if (!user_ids.length) return;
+      const records = user_ids.map((user_id) => ({ domain_id, user_id }));
+      await DomainAssignment.bulkCreate(records, { ignoreDuplicates: true });
     } catch (error) {
       throw error;
     }

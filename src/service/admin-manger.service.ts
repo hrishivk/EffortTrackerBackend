@@ -10,6 +10,14 @@ export class adminMangerService {
       throw error;
     }
   }
+  public async getTeamMembersForFilter(manager_id: string) {
+    try {
+      return await AdminManagerRepository.listTeamMembersForFilter(manager_id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
   public async addNewRoles(name: string, staus: boolean, isBlocked: boolean) {
     try {
     //   return await AdminManagerRepository.addRoles(name, staus, isBlocked);

@@ -30,8 +30,14 @@ export class SuperAdminController {
   }
   public async upsertDomain(req: Request, res: Response) {
     try {
-      const { id, name, description } = req.body;
-      const data = await SuperAdminService.upsertDomain({ userId: id, name, description });
+      const { id, name, description, assigned_am_ids } = req.body;
+      const currentUserId = req.user?.id as string;
+      const currentUserRole = req.user?.role as string;
+      const data = await SuperAdminService.upsertDomain(
+        { userId: id, name, description, assigned_am_ids },
+        currentUserId,
+        currentUserRole,
+      );
       sendResponse(res, id ? HTTP_statusCode.OK : HTTP_statusCode.CREATED, {
         success: true,
         message: id ? "Domain updated successfully" : "Domain created successfully",
@@ -42,6 +48,7 @@ export class SuperAdminController {
         "Domain not found": HTTP_statusCode.NotFound,
         "Domain with this name already exists": HTTP_statusCode.Conflict,
         "Domain name is required": HTTP_statusCode.BadRequest,
+        "Authenticated user is required": HTTP_statusCode.unAuthorized,
       };
       sendResponse(res, statusMap[error.message] || HTTP_statusCode.InternalServerError, {
         success: false,
@@ -53,7 +60,13 @@ export class SuperAdminController {
   public async deleteDomain(req: Request, res: Response) {
     try {
       const { id } = req.query;
-      const data = await SuperAdminService.deleteDomain(id as string);
+      const currentUserId = req.user?.id as string;
+      const currentUserRole = req.user?.role as string;
+      const data = await SuperAdminService.deleteDomain(
+        id as string,
+        currentUserId,
+        currentUserRole,
+      );
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "Domain deleted successfully",
@@ -63,6 +76,7 @@ export class SuperAdminController {
       const statusMap: Record<string, number> = {
         "Domain not found": HTTP_statusCode.NotFound,
         "Domain id is required": HTTP_statusCode.BadRequest,
+        "Forbidden: cannot delete a domain you did not create": HTTP_statusCode.NoAccess,
       };
       sendResponse(res, statusMap[error.message] || HTTP_statusCode.InternalServerError, {
         success: false,
@@ -72,7 +86,9 @@ export class SuperAdminController {
   }
   public async fetchDomain(req: Request, res: Response) {
     try {
-      const data = await SuperAdminService.getAllDomain();
+      const currentUserId = req.user?.id as string;
+      const currentUserRole = req.user?.role as string;
+      const data = await SuperAdminService.getAllDomain(currentUserId, currentUserRole);
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "Fetched successful",

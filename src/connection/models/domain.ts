@@ -8,6 +8,7 @@ export class Domain
   public id!: string;
   public name!: string;
   public description!: string;
+  public created_by!: string | null;
 }
 
 export const initDomain = (sequelize: Sequelize) => {
@@ -28,6 +29,15 @@ export const initDomain = (sequelize: Sequelize) => {
       description: {
         type: DataTypes.STRING(500),
         allowNull: true,
+      },
+      created_by: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+        references: {
+          model: "users",
+          key: "id",
+        },
+        onDelete: "SET NULL",
       },
     },
     {

@@ -43,8 +43,9 @@ export class LeaveRepository {
       const manager_id = user.manager_id || null;
       const total_days = this.calculateBusinessDays(data.start_date, data.end_date, data.session);
 
-      // AM leaves go directly to SP (status = "manager_approved"), skip manager step
-      const status = isAM ? "manager_approved" : "pending";
+      // AM leaves skip the manager step and wait directly on SP — but the visible
+      // status is still "pending" until SP acts. SP-side query scopes by applicant role.
+      const status = "pending";
 
       const leave = await Leave.create({
         user_id: data.user_id,
@@ -291,7 +292,7 @@ export class LeaveRepository {
     try {
       const offset = (page - 1) * limit;
       const { count, rows } = await Leave.findAndCountAll({
-        where: { status: "manager_approved" },
+        where: { status: { [Op.in]: ["pending", "manager_approved"] } },
         include: [
           {
             model: User,
@@ -325,8 +326,20 @@ export class LeaveRepository {
     try {
       const leave = await Leave.findByPk(leave_id);
       if (!leave) throw new Error("Leave not found");
-      if (leave.status !== "manager_approved" && leave.status !== "approved")
-        throw new Error("Leave is not manager-approved");
+
+      const applicant = await User.findByPk(leave.user_id, {
+        attributes: ["id", "fullName", "role"],
+      });
+
+      // Allowed: "manager_approved" (legacy/AM-applied), or "pending" only for AM applicants.
+      const isAmApplicant = applicant?.role === "AM";
+      const isPendingAm = leave.status === "pending" && isAmApplicant;
+      if (
+        leave.status !== "manager_approved" &&
+        !isPendingAm
+      ) {
+        throw new Error("Leave is not awaiting admin approval");
+      }
 
       const admin = await User.findByPk(admin_id, { attributes: ["fullName"] });
       const adminName = admin?.fullName || "Admin";
@@ -386,6 +399,128 @@ export class LeaveRepository {
     } catch (error) {
       throw error;
     }
+  }
+
+  public async getTeamLeavesForManager(
+    manager_id: string,
+    filters: {
+      status?: string;
+      leave_type?: string;
+      user_id?: string;
+      from_date?: string;
+      to_date?: string;
+    },
+    page: number = 1,
+    limit: number = 10
+  ) {
+    try {
+      const teamIds = await this.getTeamUserIds(manager_id);
+      if (teamIds.length === 0) {
+        return { data: [], total: 0, page, limit };
+      }
+
+      const where = this.buildTeamLeavesWhere(teamIds, filters);
+      const offset = (page - 1) * limit;
+
+      const { count, rows } = await Leave.findAndCountAll({
+        where,
+        include: [
+          {
+            model: User,
+            as: "applicant",
+            attributes: ["id", "fullName", "email", "employee_id", "department", "role"],
+          },
+        ],
+        order: [["applied_at", "DESC"]],
+        offset,
+        limit,
+      });
+
+      return {
+        data: rows,
+        total: count,
+        page,
+        limit,
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async getTeamLeavesForExport(
+    manager_id: string,
+    filters: {
+      status?: string;
+      leave_type?: string;
+      user_id?: string;
+      from_date?: string;
+      to_date?: string;
+    }
+  ) {
+    try {
+      const teamIds = await this.getTeamUserIds(manager_id);
+      if (teamIds.length === 0) return [];
+
+      const where = this.buildTeamLeavesWhere(teamIds, filters);
+
+      const rows = await Leave.findAll({
+        where,
+        include: [
+          {
+            model: User,
+            as: "applicant",
+            attributes: ["id", "fullName", "email", "employee_id", "department", "role"],
+          },
+        ],
+        order: [["applied_at", "DESC"]],
+      });
+
+      return rows;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  private async getTeamUserIds(manager_id: string): Promise<string[]> {
+    const team = await User.findAll({
+      where: { manager_id, role: { [Op.in]: ["USER", "DEVLOPER"] } },
+      attributes: ["id"],
+      raw: true,
+    });
+    return team.map((u: any) => u.id);
+  }
+
+  private buildTeamLeavesWhere(
+    teamIds: string[],
+    filters: {
+      status?: string;
+      leave_type?: string;
+      user_id?: string;
+      from_date?: string;
+      to_date?: string;
+    }
+  ): any {
+    const where: any = { user_id: { [Op.in]: teamIds } };
+
+    if (filters.user_id) {
+      if (!teamIds.includes(filters.user_id)) {
+        where.user_id = "__no_match__";
+      } else {
+        where.user_id = filters.user_id;
+      }
+    }
+    if (filters.status) where.status = filters.status;
+    if (filters.leave_type) where.leave_type = filters.leave_type;
+    if (filters.from_date && filters.to_date) {
+      where.start_date = { [Op.lte]: filters.to_date };
+      where.end_date = { [Op.gte]: filters.from_date };
+    } else if (filters.from_date) {
+      where.end_date = { [Op.gte]: filters.from_date };
+    } else if (filters.to_date) {
+      where.start_date = { [Op.lte]: filters.to_date };
+    }
+
+    return where;
   }
 
   public async cancelLeave(leave_id: string, user_id: string) {

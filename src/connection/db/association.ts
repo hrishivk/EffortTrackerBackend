@@ -1,5 +1,6 @@
 import { DailyTaskLog, initDailyTaskLogModel } from "../models/daily_task_logs";
 import initDomain, { Domain } from "../models/domain";
+import initDomainAssignmentModel, { DomainAssignment } from "../models/domain_assignment";
 import initProjectModel, { Project } from "../models/project";
 import initProjectMemberModel, { ProjectMember } from "../models/project_member";
 import { initTaskModel, Task } from "../models/tasks";
@@ -22,6 +23,47 @@ export class Associations {
       foreignKey: "domain_id",
       as: "projects",
       onDelete: "CASCADE",
+    });
+
+    // Domain <-> User (creator)
+    Domain.belongsTo(User, {
+      foreignKey: "created_by",
+      as: "creator",
+      onDelete: "SET NULL",
+    });
+    User.hasMany(Domain, {
+      foreignKey: "created_by",
+      as: "createdDomains",
+    });
+
+    // Domain <-> User (many-to-many through DomainAssignment)
+    Domain.belongsToMany(User, {
+      through: DomainAssignment,
+      foreignKey: "domain_id",
+      otherKey: "user_id",
+      as: "assignedUsers",
+    });
+    User.belongsToMany(Domain, {
+      through: DomainAssignment,
+      foreignKey: "user_id",
+      otherKey: "domain_id",
+      as: "assignedDomains",
+    });
+    DomainAssignment.belongsTo(Domain, {
+      foreignKey: "domain_id",
+      as: "domain",
+    });
+    DomainAssignment.belongsTo(User, {
+      foreignKey: "user_id",
+      as: "user",
+    });
+    Domain.hasMany(DomainAssignment, {
+      foreignKey: "domain_id",
+      as: "domainAssignments",
+    });
+    User.hasMany(DomainAssignment, {
+      foreignKey: "user_id",
+      as: "domainAssignments",
     });
 
     // Project <-> User (many-to-many through ProjectMember)
@@ -161,6 +203,7 @@ export class Associations {
     initProjectModel(sequelize);
     initUserModel(sequelize);
     initProjectMemberModel(sequelize);
+    initDomainAssignmentModel(sequelize);
     initTaskModel(sequelize);
     initDailyTaskLogModel(sequelize);
     initLeaveModel(sequelize);

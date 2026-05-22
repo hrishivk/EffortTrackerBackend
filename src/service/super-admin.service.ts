@@ -62,7 +62,6 @@ export class superAdminService {
         require_password_change: require_password_change ,
         lastSeenAt: "No login activity recorded",
       };
-      console.log("new userrrrrrrrrrrrrrrrrrrrrrrr",newUser)
       const createdUser = await userRepository.createUser(newUser);
       if (projects && projects.trim()) {
         const projectIds = projects
@@ -86,13 +85,21 @@ export class superAdminService {
       throw new Error(error.message || "Failed to create user.");
     }
   }
-  public async upsertDomain(data: DomainUpsertDTO) {
+  public async upsertDomain(
+    data: DomainUpsertDTO,
+    currentUserId: string,
+    currentUserRole: string,
+  ) {
     try {
-      const { userId, name, description } = data;
+      const { userId, name, description, assigned_am_ids } = data;
 
       if (!name || !name.trim()) {
         throw new Error("Domain name is required");
       }
+      if (!currentUserId) {
+        throw new Error("Authenticated user is required");
+      }
+
       if (userId) {
         const existingDomain = await SuperAdminRepository.findDomainById(userId);
         if (!existingDomain) {
@@ -108,11 +115,21 @@ export class superAdminService {
           }
         }
 
-        return await SuperAdminRepository.updateDomain(userId, {
+        const updated = await SuperAdminRepository.updateDomain(userId, {
           name: name.trim(),
           description: description?.trim(),
         });
+
+        if (currentUserRole === "SP" && Array.isArray(assigned_am_ids)) {
+          const ids = assigned_am_ids.filter(Boolean);
+          if (ids.length > 0) {
+            await SuperAdminRepository.assignDomainMembers(userId, ids);
+          }
+        }
+
+        return updated;
       }
+
       const existDomain = await SuperAdminRepository.findDomainByName(
         name.trim(),
       );
@@ -120,26 +137,60 @@ export class superAdminService {
         throw new Error("Domain with this name already exists");
       }
 
-      return await SuperAdminRepository.createDomain({
+      const created = await SuperAdminRepository.createDomain({
         name: name.trim(),
         description: description?.trim(),
+        created_by: currentUserId,
       });
+
+      // Build assignment list based on role
+      const assignments: string[] = [];
+      if (currentUserRole === "SP") {
+        if (Array.isArray(assigned_am_ids)) {
+          assignments.push(...assigned_am_ids.filter(Boolean));
+        }
+      } else if (currentUserRole === "AM") {
+        // AM cannot assign other AMs; auto-assign self
+        assignments.push(currentUserId);
+      }
+
+      if (assignments.length > 0) {
+        await SuperAdminRepository.assignDomainMembers(created.id, assignments);
+      }
+
+      return created;
     } catch (error) {
       throw error;
     }
   }
 
-  public async deleteDomain(id: string) {
+  public async deleteDomain(
+    id: string,
+    currentUserId: string,
+    currentUserRole: string,
+  ) {
     try {
       if (!id) throw new Error("Domain id is required");
+
+      if (currentUserRole !== "SP") {
+        const domain = await SuperAdminRepository.findDomainById(id);
+        if (!domain) throw new Error("Domain not found");
+        if (domain.created_by !== currentUserId) {
+          throw new Error("Forbidden: cannot delete a domain you did not create");
+        }
+      }
+
       return await SuperAdminRepository.deleteDomain(id);
     } catch (error) {
       throw error;
     }
   }
-  public async getAllDomain() {
+  public async getAllDomain(currentUserId: string, currentUserRole: string) {
     try {
-      return await SuperAdminRepository.listAllDomain();
+      if (currentUserRole === "SP") {
+        return await SuperAdminRepository.listAllDomain();
+      }
+      return await SuperAdminRepository.listDomainsForUser(currentUserId);
     } catch (error) {
       throw error;
     }

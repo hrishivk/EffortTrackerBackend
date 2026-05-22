@@ -1,4 +1,5 @@
 
+import { Op } from 'sequelize';
 import { Domain } from '../connection/models/domain';
 import { Project } from '../connection/models/project';
 import { User } from '../connection/models/user';
@@ -17,6 +18,23 @@ export class adminManagerRepository {
             include: [{ model: Domain, as: "domain" }],
           },
         ],
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async listTeamMembersForFilter(manager_id: string) {
+    try {
+      return await User.findAll({
+        where: {
+          manager_id,
+          role: { [Op.in]: ["USER", "DEVLOPER"] },
+          isBlocked: false,
+        },
+        attributes: ["id", "fullName", "employee_id", "role"],
+        order: [["fullName", "ASC"]],
+        raw: true,
       });
     } catch (error) {
       throw error;

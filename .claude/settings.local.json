@@ -3,7 +3,8 @@
     "allow": [
       "Bash(timeout 10 npx tsx:*)",
       "Bash(npm run *)",
-      "PowerShell(Get-NetTCPConnection *)"
+      "PowerShell(Get-NetTCPConnection *)",
+      "Bash(npx tsc *)"
     ]
   }
 }

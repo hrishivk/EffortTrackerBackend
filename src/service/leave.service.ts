@@ -77,6 +77,42 @@ export class LeaveService {
     }
   }
 
+  public async getTeamLeaves(
+    manager_id: string,
+    filters: {
+      status?: string;
+      leave_type?: string;
+      user_id?: string;
+      from_date?: string;
+      to_date?: string;
+    },
+    page?: number,
+    limit?: number
+  ) {
+    try {
+      return await leaveRepository.getTeamLeavesForManager(manager_id, filters, page, limit);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async getTeamLeavesForExport(
+    manager_id: string,
+    filters: {
+      status?: string;
+      leave_type?: string;
+      user_id?: string;
+      from_date?: string;
+      to_date?: string;
+    }
+  ) {
+    try {
+      return await leaveRepository.getTeamLeavesForExport(manager_id, filters);
+    } catch (error) {
+      throw error;
+    }
+  }
+
   public async cancelLeave(leave_id: string, user_id: string) {
     try {
       return await leaveRepository.cancelLeave(leave_id, user_id);
