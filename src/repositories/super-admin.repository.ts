@@ -7,6 +7,9 @@ import { DailyTaskLog } from "../connection/models/daily_task_logs";
 import { col, fn, literal, Op, Sequelize, where } from "sequelize";
 import { AddUserDTO } from "../types/user.types";
 import { Task } from "../connection/models/tasks";
+import { NotificationRepository } from "./notification.repository";
+
+const notificationRepo = new NotificationRepository();
 
 
 export class superAdminRepository {
@@ -1033,13 +1036,122 @@ export class superAdminRepository {
 
   public async removeMembers(project_id: string, user_ids: string[]) {
     try {
+      // If any user being removed is an AM, also remove their direct reports
+      // (USER/DEVLOPER with manager_id = AM.id) from this same project.
+      const amsBeingRemoved = await User.findAll({
+        where: {
+          id: { [Op.in]: user_ids },
+          role: "AM",
+        },
+        attributes: ["id"],
+        raw: true,
+      });
+      const amIds = amsBeingRemoved.map((u: any) => u.id);
+
+      let expandedIds: string[] = [...user_ids];
+
+      if (amIds.length > 0) {
+        const teamMembers = await User.findAll({
+          where: {
+            manager_id: { [Op.in]: amIds },
+            role: { [Op.in]: ["USER", "DEVLOPER"] },
+          },
+          attributes: ["id"],
+          raw: true,
+        });
+        const teamIds = teamMembers.map((u: any) => u.id);
+
+        if (teamIds.length > 0) {
+          const inProject = await ProjectMember.findAll({
+            where: {
+              project_id,
+              user_id: { [Op.in]: teamIds },
+            },
+            attributes: ["user_id"],
+            raw: true,
+          });
+          const cascadeIds = inProject.map((m: any) => m.user_id);
+          expandedIds = [...new Set([...expandedIds, ...cascadeIds])];
+        }
+      }
+
+      // Snapshot which of the requested ids were actually members before destroy,
+      // so notifications go only to users who were really removed.
+      const actuallyMembers = await ProjectMember.findAll({
+        where: {
+          project_id,
+          user_id: { [Op.in]: expandedIds },
+        },
+        attributes: ["user_id"],
+        raw: true,
+      });
+      const removedUserIds = actuallyMembers.map((m: any) => m.user_id);
+
       const removed = await ProjectMember.destroy({
         where: {
           project_id,
-          user_id: { [Op.in]: user_ids },
+          user_id: { [Op.in]: expandedIds },
         },
       });
       if (removed === 0) throw new Error("No members found to remove");
+
+      // After project-member removal: if any removed user no longer holds another
+      // project in this project's domain, also strip their DomainAssignment.
+      const project = await Project.findByPk(project_id, {
+        attributes: ["id", "name", "domain_id"],
+        raw: true,
+      });
+      const projectName = (project as any)?.name || "the project";
+      const domainId = (project as any)?.domain_id;
+      if (domainId) {
+        const otherProjectsInDomain = await Project.findAll({
+          where: {
+            domain_id: domainId,
+            id: { [Op.ne]: project_id },
+          },
+          attributes: ["id"],
+          raw: true,
+        });
+        const otherProjectIds = otherProjectsInDomain.map((p: any) => p.id);
+
+        let usersStillInDomain = new Set<string>();
+        if (otherProjectIds.length > 0) {
+          const stillIn = await ProjectMember.findAll({
+            where: {
+              user_id: { [Op.in]: expandedIds },
+              project_id: { [Op.in]: otherProjectIds },
+            },
+            attributes: ["user_id"],
+            raw: true,
+          });
+          usersStillInDomain = new Set(stillIn.map((m: any) => m.user_id));
+        }
+
+        const usersToUnassign = expandedIds.filter(
+          (uid: string) => !usersStillInDomain.has(uid),
+        );
+
+        if (usersToUnassign.length > 0) {
+          await DomainAssignment.destroy({
+            where: {
+              domain_id: domainId,
+              user_id: { [Op.in]: usersToUnassign },
+            },
+          });
+        }
+      }
+
+      // Notify each user who was actually removed from the project.
+      for (const removedUserId of removedUserIds) {
+        await notificationRepo.create({
+          user_id: removedUserId,
+          type: "project_removed",
+          title: "Removed from Project",
+          message: `You have been removed from project "${projectName}".`,
+          reference_id: project_id,
+        });
+      }
+
       return await this.getProjectMembers(project_id);
     } catch (error) {
       throw error;

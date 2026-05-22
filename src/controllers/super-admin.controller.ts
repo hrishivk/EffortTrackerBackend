@@ -76,7 +76,8 @@ export class SuperAdminController {
       const statusMap: Record<string, number> = {
         "Domain not found": HTTP_statusCode.NotFound,
         "Domain id is required": HTTP_statusCode.BadRequest,
-        "Forbidden: cannot delete a domain you did not create": HTTP_statusCode.NoAccess,
+        "You don't have permission to delete this domain.": HTTP_statusCode.NoAccess,
+        "You can only delete domains you created": HTTP_statusCode.NoAccess,
       };
       sendResponse(res, statusMap[error.message] || HTTP_statusCode.InternalServerError, {
         success: false,
@@ -497,6 +498,12 @@ export class SuperAdminController {
       }
 
       const data = await SuperAdminService.assignProjectMembers(project_id, finalUserIds);
+
+      // When an AM claims a project, also assign them to the project's domain
+      if (callerRole === "AM" && callerId) {
+        await SuperAdminService.assignProjectDomainToUser(project_id, callerId);
+      }
+
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "Members assigned successfully",

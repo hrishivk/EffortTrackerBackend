@@ -176,7 +176,12 @@ export class superAdminService {
         const domain = await SuperAdminRepository.findDomainById(id);
         if (!domain) throw new Error("Domain not found");
         if (domain.created_by !== currentUserId) {
-          throw new Error("Forbidden: cannot delete a domain you did not create");
+          const creator = await SuperAdminRepository.getuser(domain.created_by as string);
+          const creatorRole = creator?.user?.role;
+          if (creatorRole === "SP") {
+            throw new Error("You don't have permission to delete this domain");
+          }
+          throw new Error("You can only delete domains you created");
         }
       }
 
@@ -420,6 +425,18 @@ export class superAdminService {
       if (!user_ids || !user_ids.length)
         throw new Error("At least one user is required");
       return await SuperAdminRepository.assignMembers(project_id, user_ids);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async assignProjectDomainToUser(project_id: string, user_id: string) {
+    try {
+      if (!project_id || !user_id) return;
+      const project = await SuperAdminRepository.findProjectById(project_id);
+      const domainId = (project as any)?.domain_id;
+      if (!domainId) return;
+      await SuperAdminRepository.assignDomainMembers(domainId, [user_id]);
     } catch (error) {
       throw error;
     }
