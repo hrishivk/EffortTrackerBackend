@@ -12,6 +12,7 @@ export class User
   public role!: string;
   public isBlocked!: boolean;
   public manager_id!: string;
+  public is_shared!: boolean;
   public job_title!: string | null;
   public employee_id!: string | null;
   public contact_number!: string | null;
@@ -53,6 +54,11 @@ export const initUserModel = (sequelize: Sequelize) => {
       },
       manager_id: {
         type: DataTypes.STRING(50),
+      },
+      is_shared: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
       },
       job_title: {
         type: DataTypes.STRING(100),

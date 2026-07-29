@@ -8,6 +8,7 @@ export interface userAttributes {
   role: string;
   isBlocked: boolean;
   manager_id: string;
+  is_shared: boolean;
   job_title?: string | null;
   employee_id?: string | null;
   contact_number?: string | null;
@@ -56,6 +57,7 @@ export interface AddUserDTO {
   password?: string;
   role: string;
   manager_id?: string;
+  is_shared?: boolean;
   job_title?: string;
   employee_id?: string;
   contact_number?: string;
@@ -75,6 +77,7 @@ export type userInput = Optional<
   | "password"
   | "fullName"
   | "manager_id"
+  | "is_shared"
   | "role"
   | "isBlocked"
   | "job_title"

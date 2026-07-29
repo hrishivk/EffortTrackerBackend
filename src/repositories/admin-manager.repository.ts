@@ -9,7 +9,8 @@ export class adminManagerRepository {
     try {
        return await User.findAll({
         order: [["createdAt", "DESC"]],
-        where: { manager_id: id },
+        // Own team + shared users (visible to every manager)
+        where: { [Op.or]: [{ manager_id: id }, { is_shared: true }] },
         include: [
           {
             model: Project,

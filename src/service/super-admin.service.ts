@@ -24,6 +24,7 @@ export class superAdminService {
       joining_date,
       require_password_change,
       projects,
+      is_shared,
     } = data;
 
     const resolvedManagerId =  manager_id;
@@ -51,6 +52,10 @@ export class superAdminService {
         password: hashedPassword,
         role: role.toUpperCase(),
         manager_id: resolvedManagerId,
+        // Shared users (e.g. a tester spanning every project) show up in every
+        // manager's user list, not just the creator's. manager_id still points
+        // at the creator so leave approval keeps a single owner.
+        is_shared: String(is_shared) === "true",
         job_title: job_title?.trim(),
         employee_id: employee_id?.trim(),
         contact_number: contact_number?.trim(),

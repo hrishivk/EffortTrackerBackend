@@ -425,7 +425,15 @@ export class superAdminRepository {
       };
 
       if (manager_id) {
-        whereClause.manager_id = manager_id;
+        // A manager sees their own team PLUS shared users (e.g. a tester who
+        // works across every project), so shared staff are visible to all
+        // managers instead of only the one who created them.
+        // Nested under Op.and so it can't collide with the search Op.or below.
+        whereClause[Op.and] = [
+          {
+            [Op.or]: [{ manager_id }, { is_shared: true }],
+          },
+        ];
       }
 
       if (search) {
@@ -1205,7 +1213,7 @@ export class superAdminRepository {
   public async editUser(data: AddUserDTO) {
     try {
       const {
-        id, fullName, email, role, manager_id,
+        id, fullName, email, role, manager_id, is_shared,
         job_title, employee_id, contact_number, date_of_birth,
         blood_group, department, work_schedule, joining_date,
         require_password_change,
@@ -1219,6 +1227,7 @@ export class superAdminRepository {
       if (email !== undefined) updateLoad.email = email;
       if (role !== undefined) updateLoad.role = role;
       if (manager_id !== undefined) updateLoad.manager_id = manager_id;
+      if (is_shared !== undefined) updateLoad.is_shared = String(is_shared) === "true";
       if (job_title !== undefined) updateLoad.job_title = job_title;
       if (employee_id !== undefined) updateLoad.employee_id = employee_id;
       if (contact_number !== undefined) updateLoad.contact_number = contact_number;

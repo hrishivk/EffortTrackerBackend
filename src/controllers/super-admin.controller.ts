@@ -247,7 +247,7 @@ export class SuperAdminController {
       });
 
       const users = data.users.map((user: any) => ({
-        ..._.pick(user, ["id", "fullName", "email", "role", "department", "lastSeenAt"]),
+        ..._.pick(user, ["id", "fullName", "email", "role", "department", "lastSeenAt", "is_shared"]),
         projects: user.projects?.map((p: any) => _.pick(p, ["id", "name"])),
       }));
 
@@ -454,14 +454,14 @@ export class SuperAdminController {
   public async updateUser(req: Request, res: Response) {
     try {
       const {
-        id, fullName, email, role, manager_id,
+        id, fullName, email, role, manager_id, is_shared,
         jobTitle, employeeId, contactNumber, dateOfBirth,
         bloodGroup, department, workSchedule, joiningDate,
         requirePasswordChange,
       } = req.body;
 
       const data = await SuperAdminService.updateOneUser({
-        id, fullName, email, role, manager_id,
+        id, fullName, email, role, manager_id, is_shared,
         job_title: jobTitle,
         employee_id: employeeId,
         contact_number: contactNumber,
