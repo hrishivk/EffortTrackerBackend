@@ -7,7 +7,6 @@ import { Op, literal } from "sequelize";
 const notificationRepo = new NotificationRepository();
 
 export class LeaveRepository {
-  // Calculate business days (exclude weekends)
   private calculateBusinessDays(startDate: string, endDate: string, session: string): number {
     if (session === "First Half" || session === "Second Half") {
       return 0.5;
@@ -43,8 +42,7 @@ export class LeaveRepository {
       const manager_id = user.manager_id || null;
       const total_days = this.calculateBusinessDays(data.start_date, data.end_date, data.session);
 
-      // AM leaves skip the manager step and wait directly on SP — but the visible
-      // status is still "pending" until SP acts. SP-side query scopes by applicant role.
+
       const status = "pending";
 
       const leave = await Leave.create({
@@ -62,7 +60,6 @@ export class LeaveRepository {
       });
 
       if (isAM) {
-        // Notify all SP users directly
         const spUsers = await User.findAll({ where: { role: "SP" }, attributes: ["id"] });
         for (const sp of spUsers) {
           await notificationRepo.create({
@@ -74,7 +71,6 @@ export class LeaveRepository {
           });
         }
       } else if (manager_id) {
-        // Notify the AM (manager)
         await notificationRepo.create({
           user_id: manager_id,
           type: "leave_applied",

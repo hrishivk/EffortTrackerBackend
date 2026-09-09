@@ -4,12 +4,27 @@ export class Task extends Model {
   public id!: string;
   public daily_log_id!: string | null;
   public project_id!: string;
+  public group_id!: string | null;
+  // The room this task belongs to, when it was created from a room board.
+  // Nullable: most tasks have no room, and a task outlives one.
+  public room_id!: string | null;
+  // Set on a subtask; null on a top-level task.
+  public parent_id!: string | null;
+  // Free-form labels. Applies to subtasks too — same table.
+  public tags!: string[];
   public description!: string;
   public priority!: "Low" | "Medium" | "High";
   public start_time!: Date | null;
   public end_time!: Date | null;
   public total_time!: string | null;
-  public status!: "yet_to_start" | "in_progress" | "completed" | "blocked";
+  public total_seconds!: number;
+  // The plan (manager-set), kept apart from start_time/end_time which record
+  // what actually happened.
+  public start_date!: string | null;
+  public due_date!: string | null;
+  // Free text since migration 009: holds either a status value or, when the
+  // task is parked in a group, that group's name.
+  public status!: string;
   public isLocked!: boolean;
   public created_at!: Date;
   public updated_at!: Date;
@@ -41,6 +56,41 @@ export const initTaskModel = (sequelize: Sequelize) => {
         },
         onDelete: "CASCADE",
       },
+      tags: {
+        type: DataTypes.ARRAY(DataTypes.TEXT),
+        allowNull: false,
+        defaultValue: [],
+      },
+      parent_id: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+        references: {
+          model: "tasks",
+          key: "id",
+        },
+        onDelete: "CASCADE",
+      },
+      group_id: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+        references: {
+          model: "task_groups",
+          key: "id",
+        },
+        onDelete: "SET NULL",
+      },
+      // SET NULL rather than CASCADE: deleting a room must not delete real
+      // work, exactly as with group_id above. Like group_id, this has to be
+      // declared here or Sequelize never SELECTs or writes the column.
+      room_id: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+        references: {
+          model: "rooms",
+          key: "id",
+        },
+        onDelete: "SET NULL",
+      },
       description: {
         type: DataTypes.TEXT,
       },
@@ -55,8 +105,28 @@ export const initTaskModel = (sequelize: Sequelize) => {
         type: DataTypes.DATE,
         allowNull: true,
       },
+      // Existed in the table from the start but was never declared here, so
+      // Sequelize never selected or wrote it — all 656 rows were NULL.
+      total_time: {
+        type: DataTypes.STRING(50),
+        allowNull: true,
+      },
+      total_seconds: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      start_date: {
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+      },
+      due_date: {
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+      },
       status: {
-        type: DataTypes.ENUM("yet_to_start", "in_progress", "completed", "blocked"),
+        // VARCHAR(100) matches task_groups.name so any group name fits.
+        type: DataTypes.STRING(100),
         defaultValue: "yet_to_start",
       },
       isLocked: {

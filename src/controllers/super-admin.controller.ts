@@ -4,13 +4,67 @@ import HTTP_statusCode from "../Enums/statuCode";
 import { sendResponse } from "../utils/sendResponse";
 import { superAdminService } from "../service/super-admin.service";
 import _ from "lodash";
+import { normalizeUserPayload } from "../utils/userPayload";
+import { toUserDetailsView } from "../utils/userDetailsView";
 
 const SuperAdminService = new superAdminService();
+
+// Everything the edit-user modal can be told. The snackbar renders
+// response.data.message verbatim, so these strings are part of the contract.
+const EDIT_USER_STATUS: Record<string, number> = {
+  "User id is required": HTTP_statusCode.BadRequest,
+  "User not found": HTTP_statusCode.NotFound,
+  "You do not have access to this user": HTTP_statusCode.NoAccess,
+
+  "Full name is required": HTTP_statusCode.BadRequest,
+  "Full name may only contain letters and spaces": HTTP_statusCode.BadRequest,
+  "Email is required": HTTP_statusCode.BadRequest,
+  "Email is not valid": HTTP_statusCode.BadRequest,
+  "Email already exists.": HTTP_statusCode.Conflict,
+  "Employee ID already exists.": HTTP_statusCode.Conflict,
+  "Contact number must be exactly 10 digits": HTTP_statusCode.BadRequest,
+
+  "Role is not valid": HTTP_statusCode.BadRequest,
+  "You cannot change your own role": HTTP_statusCode.NoAccess,
+  "Only a super admin can assign the SP role": HTTP_statusCode.NoAccess,
+  "An admin manager may only assign the USER or DEVLOPER role": HTTP_statusCode.NoAccess,
+  "An admin manager cannot change the role of this user": HTTP_statusCode.NoAccess,
+  "An admin manager cannot change the reporting manager": HTTP_statusCode.NoAccess,
+  "An admin manager cannot change the shared flag": HTTP_statusCode.NoAccess,
+  "Reporting manager not found": HTTP_statusCode.BadRequest,
+
+  "Password is required.": HTTP_statusCode.BadRequest,
+
+  "A shared user must be assigned to at least one domain": HTTP_statusCode.BadRequest,
+  "You can only assign domains you are linked to": HTTP_statusCode.NoAccess,
+};
+
+// Messages that carry the offending ids and so cannot be matched exactly.
+const EDIT_USER_STATUS_PREFIXES: Array<[string, number]> = [
+  ["Password must ", HTTP_statusCode.BadRequest],
+  ["Blood group must be one of", HTTP_statusCode.BadRequest],
+  ["Date of birth must be", HTTP_statusCode.BadRequest],
+  ["Joining date must be", HTTP_statusCode.BadRequest],
+  ["Project not found:", HTTP_statusCode.BadRequest],
+  ["Domain not found:", HTTP_statusCode.BadRequest],
+];
+
+const editUserStatus = (message: string): number => {
+  if (EDIT_USER_STATUS[message]) return EDIT_USER_STATUS[message];
+  const prefixed = EDIT_USER_STATUS_PREFIXES.find(([prefix]) =>
+    message?.startsWith(prefix),
+  );
+  return prefixed ? prefixed[1] : HTTP_statusCode.InternalServerError;
+};
 export class SuperAdminController {
     public async user(req: Request, res: Response) {
     try {
       const manager_id = req.user?.id;
-      const data = await SuperAdminService.addUser(req.body,manager_id);
+      const data = await SuperAdminService.addUser(
+        normalizeUserPayload(req.body) as any,
+        manager_id,
+        req.user?.role,
+      );
       sendResponse(res, HTTP_statusCode.CREATED, {
         success: true,
         message: "User created successfully",
@@ -21,6 +75,9 @@ export class SuperAdminController {
         "Email already exists.": HTTP_statusCode.Conflict,
         "Employee ID already exists.": HTTP_statusCode.Conflict,
         "Password is required.": HTTP_statusCode.BadRequest,
+        "A shared user must be assigned to at least one domain": HTTP_statusCode.BadRequest,
+        "You can only assign domains you are linked to": HTTP_statusCode.NoAccess,
+        "Reporting manager not found": HTTP_statusCode.BadRequest,
       };
       sendResponse(res, statusMap[error.message] || HTTP_statusCode.InternalServerError, {
         success: false,
@@ -89,7 +146,9 @@ export class SuperAdminController {
     try {
       const currentUserId = req.user?.id as string;
       const currentUserRole = req.user?.role as string;
-      const data = await SuperAdminService.getAllDomain(currentUserId, currentUserRole);
+      const isSharedParam = (req.query.isShared ?? req.query.is_shared) as string | undefined;
+      const isShared = String(isSharedParam) === "true";
+      const data = await SuperAdminService.getAllDomain(currentUserId, currentUserRole, isShared);
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "Fetched successful",
@@ -232,7 +291,7 @@ export class SuperAdminController {
     try {
          const manager_id = req.user?.id;
          console.log("enterrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrmamangeerrrrrrrrrrrrrrrrrrrrr",manager_id)
-      const { search, role, isBlocked, project_id, page, limit } = req.query;
+      const { search, role, isBlocked, project_id, page, limit, is_shared } = req.query;
       const userRole = req.user?.role;
       const userId = req.user?.id;
 
@@ -242,6 +301,10 @@ export class SuperAdminController {
         isBlocked: isBlocked as string,
         project_id: project_id as string,
         manager_id: userRole === "AM" ? userId : undefined,
+        // Only forwarded when actually present, so an absent param keeps
+        // meaning "both", not "non-shared".
+        is_shared:
+          is_shared === undefined ? undefined : String(is_shared),
         page: Math.max(parseInt(page as string) || 1, 1),
         limit: Math.min(Math.max(parseInt(limit as string) || 10, 1), 100),
       });
@@ -249,6 +312,10 @@ export class SuperAdminController {
       const users = data.users.map((user: any) => ({
         ..._.pick(user, ["id", "fullName", "email", "role", "department", "lastSeenAt", "is_shared"]),
         projects: user.projects?.map((p: any) => _.pick(p, ["id", "name"])),
+        // Only meaningful for shared users — the domains they are shared across
+        domains: user.is_shared
+          ? user.assignedDomains?.map((d: any) => _.pick(d, ["id", "name"])) ?? []
+          : undefined,
       }));
 
       sendResponse(res, HTTP_statusCode.OK, {
@@ -314,6 +381,30 @@ export class SuperAdminController {
       });
     }
 
+  }
+  // GET /role-sp/user-details?id=USR-10023
+  // Backs the edit-user modal. Field names match what PATCH /role-sp/edit-user
+  // accepts, so the modal reads and writes the same shape.
+  public async getUserDetails(req: Request, res: Response) {
+    try {
+      const { id } = req.query;
+      const user = await SuperAdminService.getUserDetails(
+        id as string,
+        req.user?.id,
+        req.user?.role,
+      );
+
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "Fetched successful",
+        data: toUserDetailsView(user),
+      });
+    } catch (error: any) {
+      sendResponse(res, editUserStatus(error.message), {
+        success: false,
+        message: error.message || "Fetching user details failed",
+      });
+    }
   }
   public async getTaskCount(req:Request,res:Response){
     try {
@@ -451,36 +542,51 @@ export class SuperAdminController {
     }
 
   }
+  // PATCH /role-sp/edit-user
+  // One route, two payloads: the User Details tab and the Change Password tab
+  // of the same modal. AM hits this too - there is no /role-am/edit-user - so
+  // the service scopes what an AM is allowed to change.
   public async updateUser(req: Request, res: Response) {
     try {
-      const {
-        id, fullName, email, role, manager_id, is_shared,
-        jobTitle, employeeId, contactNumber, dateOfBirth,
-        bloodGroup, department, workSchedule, joiningDate,
-        requirePasswordChange,
-      } = req.body;
-
-      const data = await SuperAdminService.updateOneUser({
-        id, fullName, email, role, manager_id, is_shared,
-        job_title: jobTitle,
-        employee_id: employeeId,
-        contact_number: contactNumber,
-        date_of_birth: dateOfBirth,
-        blood_group: bloodGroup,
-        department,
-        work_schedule: workSchedule,
-        joining_date: joiningDate,
-        require_password_change: requirePasswordChange,
-      });
+      const user = await SuperAdminService.updateOneUser(
+        normalizeUserPayload(req.body),
+        req.user?.id,
+        req.user?.role,
+      );
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
-        message: "User edited successfully",
-        data,
+        message: "User updated successfully",
+        data: toUserDetailsView(user),
       });
     } catch (error: any) {
-      sendResponse(res, HTTP_statusCode.InternalServerError, {
+      sendResponse(res, editUserStatus(error.message), {
         success: false,
         message: error.message || "User edit failed",
+      });
+    }
+  }
+
+  // PATCH /role-sp/reset-user-password
+  // The Change Password tab with nothing else attached. Same guards as
+  // edit-user; the frontend can move to it without a contract change.
+  public async resetUserPassword(req: Request, res: Response) {
+    try {
+      const { id, password } = req.body ?? {};
+      const user = await SuperAdminService.resetUserPassword(
+        id,
+        password,
+        req.user?.id,
+        req.user?.role,
+      );
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "Password updated successfully",
+        data: toUserDetailsView(user),
+      });
+    } catch (error: any) {
+      sendResponse(res, editUserStatus(error.message), {
+        success: false,
+        message: error.message || "Password update failed",
       });
     }
   }

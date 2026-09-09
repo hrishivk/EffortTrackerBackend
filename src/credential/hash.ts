@@ -1,6 +1,9 @@
 import bcrypt from "bcrypt";
+import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { envConfig } from "../config/env.config";
+
+export const newSessionId = (): string => crypto.randomBytes(32).toString("hex");
 
 export class credentialHashing {
   public async hashPassword(password: string): Promise<string> {
@@ -12,9 +15,9 @@ export class credentialHashing {
       throw error;
     }
   }
- public async newHashtoken(id: string, email: string, role: string): Promise<{ accessToken: string}> {
+ public async newHashtoken(id: string, email: string, role: string, sid?: string): Promise<{ accessToken: string}> {
     try {
-      const payload = { id, email, role };
+      const payload = { id, email, role, sid: sid ?? newSessionId() };
         const secret = envConfig.ACCESS_SECRET
         ? envConfig.ACCESS_SECRET
         : (() => {
@@ -28,13 +31,15 @@ export class credentialHashing {
       throw error;
     }
   }
+
   public async hashtoken(
     id: string,
     email: string,
-    role: string
+    role: string,
+    sid?: string
   ): Promise<{ accessToken: string; refreshToken: string }> {
     try {
-      const payload = { id, email, role };
+      const payload = { id, email, role, sid: sid ?? newSessionId() };
       const secret = envConfig.ACCESS_SECRET
         ? envConfig.ACCESS_SECRET
         : (() => {

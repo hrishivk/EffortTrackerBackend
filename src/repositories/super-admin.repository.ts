@@ -5,7 +5,7 @@ import { ProjectMember } from "../connection/models/project_member";
 import { User } from "../connection/models/user";
 import { DailyTaskLog } from "../connection/models/daily_task_logs";
 import { col, fn, literal, Op, Sequelize, where } from "sequelize";
-import { AddUserDTO } from "../types/user.types";
+import { AddUserDTO, EditUserDTO } from "../types/user.types";
 import { Task } from "../connection/models/tasks";
 import { NotificationRepository } from "./notification.repository";
 
@@ -225,6 +225,73 @@ export class superAdminRepository {
       throw error;
     }
   }
+
+  // Domains a user is linked to — for an AM this is the set of domains they own.
+  public async getDomainIdsForUser(user_id: string): Promise<string[]> {
+    try {
+      const rows = await DomainAssignment.findAll({
+        where: { user_id },
+        attributes: ["domain_id"],
+        raw: true,
+      });
+      return [...new Set(rows.map((r: any) => r.domain_id))];
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Everyone assigned to any of this user's domains. An AM uses this to see the
+  // shared users (is_shared) that were assigned to the domains they are linked to.
+  public async getDomainPeerUserIds(user_id: string): Promise<string[]> {
+    try {
+      const domainIds = await this.getDomainIdsForUser(user_id);
+      if (!domainIds.length) return [];
+      const rows = await DomainAssignment.findAll({
+        where: { domain_id: { [Op.in]: domainIds } },
+        attributes: ["user_id"],
+        raw: true,
+      });
+      return [...new Set(rows.map((r: any) => r.user_id))];
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Replaces a user's domain links with exactly `domain_ids`.
+  public async syncUserDomains(user_id: string, domain_ids: string[]) {
+    try {
+      const current = await this.getDomainIdsForUser(user_id);
+      const stale = current.filter((id) => !domain_ids.includes(id));
+      if (stale.length) {
+        await DomainAssignment.destroy({
+          where: { user_id, domain_id: { [Op.in]: stale } },
+        });
+      }
+      const missing = domain_ids.filter((id) => !current.includes(id));
+      if (missing.length) {
+        await DomainAssignment.bulkCreate(
+          missing.map((domain_id) => ({ domain_id, user_id })),
+          { ignoreDuplicates: true },
+        );
+      }
+      return domain_ids;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async findDomainsByIds(domain_ids: string[]) {
+    try {
+      if (!domain_ids.length) return [];
+      return await Domain.findAll({
+        where: { id: { [Op.in]: domain_ids } },
+        attributes: ["id", "name"],
+        raw: true,
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
   public async listAllProjects(userId?: string, userRole?: string, search?: string, page?: number, limit?: number) {
     try {
       const includeClause: any[] = [
@@ -414,24 +481,30 @@ export class superAdminRepository {
     isBlocked?: string;
     project_id?: string;
     manager_id?: string;
+    is_shared?: string;
     page: number;
     limit: number;
   }) {
     try {
-      const { search, role, isBlocked, project_id, manager_id, page, limit } = filters;
+      const { search, role, isBlocked, project_id, manager_id, is_shared, page, limit } = filters;
       const whereClause: any = {
         id: { [Op.ne]: "2f3xfkSN5zHdYa5" },
         role: { [Op.ne]: "SP" },
       };
 
       if (manager_id) {
-        // A manager sees their own team PLUS shared users (e.g. a tester who
-        // works across every project), so shared staff are visible to all
-        // managers instead of only the one who created them.
+        // A manager sees their own team PLUS shared users (e.g. a tester spanning
+        // several domains) that are assigned to one of this manager's domains.
+        // A shared user assigned to two domains therefore shows up for both of
+        // those domains' managers, and for nobody else.
         // Nested under Op.and so it can't collide with the search Op.or below.
+        const domainPeerIds = await this.getDomainPeerUserIds(manager_id);
         whereClause[Op.and] = [
           {
-            [Op.or]: [{ manager_id }, { is_shared: true }],
+            [Op.or]: [
+              { manager_id },
+              { is_shared: true, id: { [Op.in]: domainPeerIds } },
+            ],
           },
         ];
       }
@@ -450,6 +523,20 @@ export class superAdminRepository {
         whereClause.isBlocked = isBlocked === "true";
       }
 
+      // Narrows to shared users (or explicitly to non-shared ones), so the room
+      // pool can ask for the shared half by itself instead of reading every
+      // user and filtering client-side — which silently lost anyone past the
+      // 100-row cap.
+      //
+      // Deliberately ANDed ON TOP of the manager scoping above rather than
+      // replacing it: for an AM that still means "shared users in my domains",
+      // exactly the set they can see today. Returning EVERY shared user to an
+      // AM would widen what the role can read, which is a permissions decision,
+      // not a filter.
+      if (is_shared !== undefined) {
+        whereClause.is_shared = is_shared === "true";
+      }
+
       const offset = (page - 1) * limit;
 
       const includeClause: any[] = [
@@ -463,6 +550,14 @@ export class superAdminRepository {
               as: "domain",
             },
           ],
+        },
+        // Domains a shared user is assigned to
+        {
+          model: Domain,
+          as: "assignedDomains",
+          attributes: ["id", "name"],
+          through: { attributes: [] },
+          required: false,
         },
       ];
 
@@ -588,6 +683,46 @@ export class superAdminRepository {
       throw error;
     }
   }
+  // Single user for the edit modal: everything the add/edit form collects, plus
+  // the projects and the domains a shared user is scoped to. Password is never
+  // selected. Access is enforced in the service layer.
+  public async findUserById(id: string) {
+    try {
+      return await User.findByPk(id, {
+        attributes: ["id", "role", "is_shared", "manager_id"],
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async getUserDetails(id: string) {
+    try {
+      return await User.findOne({
+        where: { id },
+        attributes: { exclude: ["password"] },
+        include: [
+          {
+            model: Project,
+            as: "projects",
+            attributes: ["id", "name"],
+            through: { attributes: [] },
+            required: false,
+          },
+          {
+            model: Domain,
+            as: "assignedDomains",
+            attributes: ["id", "name"],
+            through: { attributes: [] },
+            required: false,
+          },
+        ],
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
   public async fetchTaskCount(role: string, date: string) {
     try {
       const statusCounts: any = await Task.findAll({
@@ -1202,18 +1337,92 @@ export class superAdminRepository {
       throw error;
     }
   }
-  public async findUserByEmployeeId(employee_id: string) {
+  // excludeId keeps an edit from colliding with the row being edited: saving a
+  // user without touching their employee_id must not report a duplicate.
+  public async findUserByEmployeeId(employee_id: string, excludeId?: string) {
     try {
-      return await User.findOne({ where: { employee_id } });
+      const where: any = { employee_id };
+      if (excludeId) where.id = { [Op.ne]: excludeId };
+      return await User.findOne({ where });
     } catch (error) {
       throw error;
     }
   }
 
-  public async editUser(data: AddUserDTO) {
+  public async findUserByEmail(email: string, excludeId?: string) {
+    try {
+      const where: any = { email };
+      if (excludeId) where.id = { [Op.ne]: excludeId };
+      return await User.findOne({ where });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async findProjectsByIds(project_ids: string[]) {
+    try {
+      if (!project_ids.length) return [];
+      return await Project.findAll({
+        where: { id: { [Op.in]: project_ids } },
+        attributes: ["id", "name"],
+        raw: true,
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async getProjectIdsForUser(user_id: string): Promise<string[]> {
+    try {
+      const rows = await ProjectMember.findAll({
+        where: { user_id },
+        attributes: ["project_id"],
+        raw: true,
+      });
+      return rows.map((r: any) => String(r.project_id));
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Replaces a user's project memberships with exactly `project_ids`.
+  // Mirrors syncUserDomains: the edit modal sends the whole set, not a delta,
+  // so an id missing from the list means "detach", and [] detaches from all.
+  // Deliberately not routed through removeMembers - that path also unassigns an
+  // AM's direct reports, which is right for the project screen and wrong here.
+  public async syncUserProjects(user_id: string, project_ids: string[]) {
+    try {
+      const current = await this.getProjectIdsForUser(user_id);
+      const stale = current.filter((id) => !project_ids.includes(id));
+      if (stale.length) {
+        await ProjectMember.destroy({
+          where: { user_id, project_id: { [Op.in]: stale } },
+        });
+      }
+      const missing = project_ids.filter((id) => !current.includes(id));
+      if (missing.length) {
+        await ProjectMember.bulkCreate(
+          missing.map((project_id) => ({ project_id, user_id })),
+          { ignoreDuplicates: true },
+        );
+      }
+      return project_ids;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Partial update. A key that is absent from `data` is never written, so a
+  // password-only save cannot null out the profile and a profile save cannot
+  // touch the password.
+  //
+  // `data.password`, when present, MUST already be a bcrypt hash - the service
+  // is the only caller and hashes before it gets here. Nothing on this path
+  // hashes for you, so a raw string would land raw.
+  public async editUser(data: EditUserDTO) {
     try {
       const {
-        id, fullName, email, role, manager_id, is_shared,
+        id, fullName, email, password, role, manager_id, is_shared,
         job_title, employee_id, contact_number, date_of_birth,
         blood_group, department, work_schedule, joining_date,
         require_password_change,
@@ -1225,8 +1434,12 @@ export class superAdminRepository {
       const updateLoad: any = {};
       if (fullName !== undefined) updateLoad.fullName = fullName;
       if (email !== undefined) updateLoad.email = email;
+      if (password !== undefined) updateLoad.password = password;
       if (role !== undefined) updateLoad.role = role;
-      if (manager_id !== undefined) updateLoad.manager_id = manager_id;
+      // Never clear the reporting manager from a blank form field: leave
+      // approval routes through manager_id and needs a single owner.
+      if (manager_id !== undefined && manager_id !== null && String(manager_id).trim() !== "")
+        updateLoad.manager_id = manager_id;
       if (is_shared !== undefined) updateLoad.is_shared = String(is_shared) === "true";
       if (job_title !== undefined) updateLoad.job_title = job_title;
       if (employee_id !== undefined) updateLoad.employee_id = employee_id;

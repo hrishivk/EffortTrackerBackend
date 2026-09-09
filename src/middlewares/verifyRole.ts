@@ -10,7 +10,10 @@ const JWT_REfresh_SECRET = envConfig.REFRESH_SECRET as string;
 const CredentialHashing = new credentialHashing();
 declare module "express-serve-static-core" {
   interface Request {
-    user?: JwtPayload & { id: string; email: string; role: Role };
+    // sid: the login-session id. Optional because a token minted before this
+    // claim existed is still valid until it expires; readers must treat a
+    // missing sid as "no session-scoped unlocks", never as a wildcard.
+    user?: JwtPayload & { id: string; email: string; role: Role; sid?: string };
   }
 }
 const authorize = (allowedRoles: Role[]) => {
@@ -29,11 +32,16 @@ const authorize = (allowedRoles: Role[]) => {
           id: refreshDecoded.id,
           email: refreshDecoded.email,
           role: refreshDecoded.role,
+          sid: refreshDecoded.sid as string | undefined,
         };
+        // The SAME sid is carried into the re-issued pair. Minting a new one
+        // here would silently end the session's workspace unlocks every time
+        // the 15-minute access token lapsed.
         const newTokens = await CredentialHashing.hashtoken(
           user.id,
           user.email,
-          user.role
+          user.role,
+          user.sid
         );
         res.cookie("rhythmrx_auth", newTokens.accessToken, {
           httpOnly: true,
@@ -64,6 +72,7 @@ const authorize = (allowedRoles: Role[]) => {
         id: decoded.id,
         email: decoded.email,
         role: decoded.role,
+        sid: decoded.sid as string | undefined,
         iat: decoded.iat,
         exp: decoded.exp,
       };

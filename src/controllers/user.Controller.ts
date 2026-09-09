@@ -2,20 +2,45 @@ import { Request, Response, NextFunction } from "express";
 import { sendResponse } from "../utils/sendResponse";
 import HTTP_statusCode from "../Enums/statuCode";
 import { userService } from "../service/user.service";
+import { TaskStatusUpdate } from "../types/task.types";
 import { superAdminService } from "../service/super-admin.service";
 import { LeaveService } from "../service/leave.service";
+import { TaskGroupService } from "../service/task-group.service";
 import { NotificationRepository } from "../repositories/notification.repository";
 import { AttendanceRepository } from "../repositories/attendance.repository";
 const UserService = new userService();
 const SuperAdminService = new superAdminService();
 const leaveService = new LeaveService();
+const taskGroupService = new TaskGroupService();
 const notificationRepo = new NotificationRepository();
 const attendanceRepo = new AttendanceRepository();
+
+// Deliberately not HTTP_statusCode.TaskFailed (304): a 304 carries no body, so
+// the message would never reach the caller's snackbar.
+const taskGroupErrorCode = (message?: string): HTTP_statusCode => {
+  if (!message) return HTTP_statusCode.InternalServerError;
+  if (message === "Group not found") return HTTP_statusCode.NotFound;
+  if (
+    message === "A group with that name already exists" ||
+    message === "A shared group with that name already exists"
+  )
+    return HTTP_statusCode.Conflict;
+  if (message.startsWith("Not authorized")) return HTTP_statusCode.NoAccess;
+  if (
+    message.startsWith("Group name") ||
+    message.startsWith("Group id") ||
+    message.startsWith("Color must") ||
+    message.startsWith("Position must") ||
+    message.startsWith("Nothing to update")
+  )
+    return HTTP_statusCode.BadRequest;
+  return HTTP_statusCode.InternalServerError;
+};
 
 export class userController {
   public async task(req: Request, res: Response) {
     try {
-      const { created_by, assigned_to, project, project_id, description, priority, end_time, status } = req.body;
+      const { created_by, assigned_to, project, project_id, description, priority, end_time, start_date, due_date, status, tags, subtasks, parent_id, room_id } = req.body;
       const data = await UserService.addTask({
         created_by,
         assigned_to,
@@ -24,7 +49,15 @@ export class userController {
         description,
         priority,
         end_time,
+        start_date,
+        due_date,
         status,
+        tags,
+        subtasks,
+        parent_id,
+        // Sent by the room page alongside project_id, assigned_to, priority,
+        // status and group_id. Omitted everywhere else, so it stays null.
+        room_id,
       });
       sendResponse(res, HTTP_statusCode.CREATED, {
         success: true,
@@ -45,11 +78,11 @@ export class userController {
   }
   public async taskList(req: Request, res: Response) {
     try {
-      const { date, assigned_to, project, page = "1", limit = "10" } = req.query;
+      const { date, assigned_to, project, status, page = "1", limit = "10" } = req.query;
       const id = req.user?.id;
       const role = req.user?.role;
       const result = await UserService.listTask({
-        date, id, role, assigned_to, project,
+        date, id, role, assigned_to, project, status,
         page: parseInt(page as string),
         limit: parseInt(limit as string),
       });
@@ -78,14 +111,29 @@ export class userController {
 
   public async statusUpdate(req: Request, res: Response) {
     try {
-       console.log(req.query.id)
-      const id = req.query.id as string
-     
-      const newStatus = req.body.status;
-      const data = await UserService.updateStatus({ id, status: newStatus });
+      const id = req.query.id as string;
+      if (!id) {
+        sendResponse(res, HTTP_statusCode.BadRequest, {
+          success: false,
+          message: "Task id is required",
+        });
+        return;
+      }
+
+      // Read with `in` rather than a plain lookup so the drop payloads stay
+      // distinguishable:
+      //   drop on a status lane -> { status, group_id: null }  (unlinks group)
+      //   drop on a group       -> { group_id }                (status untouched)
+      // An absent key means "leave unchanged"; an explicit null means "clear".
+      const body = req.body ?? {};
+      const payload: TaskStatusUpdate = { id };
+      if ("status" in body) payload.status = body.status;
+      if ("group_id" in body) payload.group_id = body.group_id;
+
+      const data = await UserService.updateStatus(payload);
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
-        message: "Task status updated successfuly",
+        message: "Task updated successfuly",
         data,
       });
     } catch (error: any) {
@@ -93,11 +141,27 @@ export class userController {
       const errorStatusMap: Record<string, number> = {
         "Daily log is locked. Cannot update task status.":
           HTTP_statusCode.locked,
-        "A task is currently in progress for today": HTTP_statusCode.locked,
+        "A completed task cannot be reopened": HTTP_statusCode.Conflict,
+        "A task must be started before it can be completed":
+          HTTP_statusCode.Conflict,
+        "A task must be completed before it can be moved to a group":
+          HTTP_statusCode.Conflict,
+        "A task in a group cannot be moved back to a status":
+          HTTP_statusCode.Conflict,
+        "A task in progress cannot go back to yet to start":
+          HTTP_statusCode.Conflict,
+        "Task not found": HTTP_statusCode.NotFound,
+        "Group not found": HTTP_statusCode.NotFound,
+        "Group belongs to a different board": HTTP_statusCode.BadRequest,
+        "Nothing to update: send status, group_id or both":
+          HTTP_statusCode.BadRequest,
       };
 
       const statusCode =
-        errorStatusMap[error.message] || HTTP_statusCode.TaskFailed;
+        errorStatusMap[error.message] ||
+        (String(error.message).startsWith("Invalid status")
+          ? HTTP_statusCode.BadRequest
+          : HTTP_statusCode.TaskFailed);
 
       sendResponse(res, statusCode, {
         success: false,
@@ -140,6 +204,111 @@ export class userController {
       sendResponse(res, HTTP_statusCode.TaskFailed, {
         success: false,
         message: error.message || "task fetch failed",
+      });
+    }
+  }
+
+  // ── Board Groups ──
+  //
+  // A group is a user-created lane on the board, scoped per user. A caller sees
+  // their own groups; SP/AM can pass ?assigned_to=<userId> to get the groups of
+  // a board they are allowed to view. That keeps the group list aligned with the
+  // group_id values /task-list returns for that same board.
+
+  public async listTaskGroups(req: Request, res: Response) {
+    try {
+      const callerId = req.user?.id as string;
+      const assigned_to = req.query.assigned_to as string | undefined;
+      const data = await taskGroupService.listGroups(
+        callerId,
+        req.user?.role,
+        assigned_to
+      );
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "Task groups fetched successfully",
+        data,
+      });
+    } catch (error: any) {
+      sendResponse(res, taskGroupErrorCode(error.message), {
+        success: false,
+        message: error.message || "Failed to fetch task groups",
+      });
+    }
+  }
+
+  public async createTaskGroup(req: Request, res: Response) {
+    try {
+      const callerId = req.user?.id as string;
+      const { name, color, position, assigned_to } = req.body ?? {};
+      const data = await taskGroupService.createGroup(callerId, req.user?.role, {
+        name,
+        color,
+        position,
+        assigned_to,
+      });
+      sendResponse(res, HTTP_statusCode.CREATED, {
+        success: true,
+        message: "Task group created successfully",
+        data,
+      });
+    } catch (error: any) {
+      sendResponse(res, taskGroupErrorCode(error.message), {
+        success: false,
+        message: error.message || "Failed to create task group",
+      });
+    }
+  }
+
+  public async updateTaskGroup(req: Request, res: Response) {
+    try {
+      const callerId = req.user?.id as string;
+      const id = req.query.id as string;
+      const body = req.body ?? {};
+      // Only forward keys the client actually sent, so a rename does not blank
+      // out the group's color or reset its position.
+      const patch: { name?: unknown; color?: unknown; position?: unknown } = {};
+      if ("name" in body) patch.name = body.name;
+      if ("color" in body) patch.color = body.color;
+      if ("position" in body) patch.position = body.position;
+
+      const data = await taskGroupService.updateGroup(
+        callerId,
+        req.user?.role,
+        id,
+        patch
+      );
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "Task group updated successfully",
+        data,
+      });
+    } catch (error: any) {
+      sendResponse(res, taskGroupErrorCode(error.message), {
+        success: false,
+        message: error.message || "Failed to update task group",
+      });
+    }
+  }
+
+  public async deleteTaskGroup(req: Request, res: Response) {
+    try {
+      const callerId = req.user?.id as string;
+      const id = req.query.id as string;
+      const data = await taskGroupService.deleteGroup(
+        callerId,
+        req.user?.role,
+        id
+      );
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "Task group deleted successfully",
+        data,
+      });
+    } catch (error: any) {
+      sendResponse(res, taskGroupErrorCode(error.message), {
+        success: false,
+        message: error.message || "Failed to delete task group",
       });
     }
   }

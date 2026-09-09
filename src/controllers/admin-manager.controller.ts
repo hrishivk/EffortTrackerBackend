@@ -19,11 +19,11 @@ const STATUS_LABELS: Record<string, string> = {
 
 function readLeaveFilters(req: Request) {
   return {
-    status: (req.query.status as string) || undefined,
-    leave_type: (req.query.leave_type as string) || undefined,
-    user_id: (req.query.user_id as string) || undefined,
-    from_date: (req.query.from_date as string) || undefined,
-    to_date: (req.query.to_date as string) || undefined,
+    status: (req.query.status as string),
+    leave_type: (req.query.leave_type as string),
+    user_id: (req.query.user_id as string),
+    from_date: (req.query.from_date as string),
+    to_date: (req.query.to_date as string),
   };
 }
 

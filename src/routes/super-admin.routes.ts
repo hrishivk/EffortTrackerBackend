@@ -10,7 +10,9 @@ export class SuperAdminRoute {
     this.router.post("/add-user", roleGuards.AdminOrSuperAdmin, this.controller.user);
     this.router.get("/list-users", roleGuards.AdminOrSuperAdmin, this.controller.fetchUsers);
     this.router.get("/user", roleGuards.allAcess, this.controller.getUser);
-    this.router.patch("/edit-user", roleGuards.SuperAdmin, this.controller.updateUser);
+    this.router.get("/user-details", roleGuards.AdminOrSuperAdmin, this.controller.getUserDetails);
+    this.router.patch("/edit-user", roleGuards.AdminOrSuperAdmin, this.controller.updateUser);
+    this.router.patch("/reset-user-password", roleGuards.AdminOrSuperAdmin, this.controller.resetUserPassword);
     this.router.delete("/delete-user", roleGuards.AdminOrSuperAdmin, this.controller.deleteUser);
     this.router.patch("/block-user", roleGuards.SuperAdmin, this.controller.blockUser);
     this.router.patch("/unblock-user", roleGuards.SuperAdmin, this.controller.unBlock);

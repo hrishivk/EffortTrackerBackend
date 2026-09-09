@@ -9,6 +9,7 @@ enum HTTP_statusCode{
     NotFound = 404,
     Conflict = 409,
     Expired = 410,
+    TooManyRequests = 429,
     InternalServerError = 500,
     ServiceUnavailabe = 503,
     locked=423 
