@@ -49,6 +49,11 @@ export interface AddTask {
   parent_id?: string | null;
   tags?: unknown;
   subtasks?: SubTaskInput[];
+  // Set on the MAIN task. When true its subtasks run strictly in `position`
+  // order: subtask 2 cannot be started until subtask 1 is completed.
+  sequential?: boolean;
+  // Order inside a parent. Set by the subtask loop, not by API callers.
+  position?: number;
   due_date?: string;
   created_at?: Date;
   updated_at?: Date;
@@ -152,4 +157,20 @@ export interface SubTaskInput {
   due_date?: string;
   status?: string;
   tags?: unknown;
+  // The room member this subtask belongs to. This is the field the whole
+  // shared-task feature rests on: without it every child inherited the
+  // parent's assignee, so one task could not be split across three people.
+  //
+  // Assignment is not a column on tasks — it lives on the subtask's
+  // daily_task_log (created_by, assigned_to), the same place the rest of the
+  // app reads it from as dailyLog.assignedUser. So a subtask with its own
+  // assignee gets its own daily log, and the child rows of one parent can sit
+  // in three different people's logs.
+  //
+  // Falls back to the parent's assignee when omitted, which is exactly the
+  // pre-feature behaviour.
+  assigned_to?: string;
+  // Order inside the parent. Omitted -> the 1-based index in the array, so a
+  // caller that just sends them in order gets sensible ordering for free.
+  position?: number;
 }

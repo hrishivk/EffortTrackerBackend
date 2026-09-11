@@ -13,6 +13,23 @@ export class UserRoute {
     this.router.patch("/task-lock", roleGuards.allAcess, this.controller.taskLock);
     this.router.patch("/updateTask", roleGuards.allAcess, this.controller.statusUpdate);
 
+    // Task comments — on the tasks row, not a table of their own. A subtask is
+    // already a row in tasks, so one column covers the main task and any
+    // subtask alike.
+    //
+    // No GET on purpose: comments come back nested inside /task-list. These
+    // three writes exist rather than letting the client PATCH the array
+    // because a whole-array write from a browser loses comments that landed
+    // concurrently and lets anyone rewrite someone else's.
+    //
+    // allAcess here, narrowed in TaskCommentService to "anyone who can read
+    // the task" — the same rule /task-list applies — so a 403 arrives inside
+    // the { success, message } envelope rather than as the middleware's bare
+    // { error }.
+    this.router.post("/task-comment", roleGuards.allAcess, this.controller.addTaskComment);
+    this.router.patch("/task-comment", roleGuards.allAcess, this.controller.updateTaskComment);
+    this.router.delete("/task-comment", roleGuards.allAcess, this.controller.deleteTaskComment);
+
     // Board Groups — a group lane lives alongside the four status lanes
     this.router.get("/task-groups", roleGuards.allAcess, this.controller.listTaskGroups);
     this.router.post("/task-groups", roleGuards.allAcess, this.controller.createTaskGroup);
@@ -27,6 +44,21 @@ export class UserRoute {
     // the SP/AM-only rule for writes is enforced in WorkspaceService, which
     // keeps a 403 inside the { success, message } envelope instead of the
     // middleware's bare { error }.
+
+    // The manager picker behind the "mark completed" button next to the
+    // workspace status. Registered BEFORE /workspaces so the literal path is
+    // never read as a workspace id by a future /workspaces/:id route.
+    //
+    // allAcess here and narrowed to SP/AM in the service, like every other
+    // workspace write: only those two can complete a workspace, so only they
+    // have any use for the list.
+    this.router.get("/workspaces/notify-targets", roleGuards.allAcess, this.workspaceController.getNotifyTargets);
+
+    // The Announce it strip. The one route in the app where the CLIENT raises a
+    // notification rather than reading one, so the service validates hard and
+    // writes nothing on a bad request.
+    this.router.post("/workspaces/notify-completed", roleGuards.allAcess, this.workspaceController.notifyCompleted);
+
     this.router.get("/workspaces", roleGuards.allAcess, this.workspaceController.getWorkspaces);
     this.router.post("/workspaces", roleGuards.allAcess, this.workspaceController.createWorkspace);
     this.router.patch("/workspaces", roleGuards.allAcess, this.workspaceController.updateWorkspace);

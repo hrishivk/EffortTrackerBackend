@@ -6,12 +6,17 @@ import { TaskStatusUpdate } from "../types/task.types";
 import { superAdminService } from "../service/super-admin.service";
 import { LeaveService } from "../service/leave.service";
 import { TaskGroupService } from "../service/task-group.service";
+import {
+  COMMENT_ERRORS,
+  TaskCommentService,
+} from "../service/task-comment.service";
 import { NotificationRepository } from "../repositories/notification.repository";
 import { AttendanceRepository } from "../repositories/attendance.repository";
 const UserService = new userService();
 const SuperAdminService = new superAdminService();
 const leaveService = new LeaveService();
 const taskGroupService = new TaskGroupService();
+const taskCommentService = new TaskCommentService();
 const notificationRepo = new NotificationRepository();
 const attendanceRepo = new AttendanceRepository();
 
@@ -37,10 +42,35 @@ const taskGroupErrorCode = (message?: string): HTTP_statusCode => {
   return HTTP_statusCode.InternalServerError;
 };
 
+// Same shape as taskGroupErrorCode above, and 304 is avoided here for the same
+// reason: it carries no body, so the message would never reach the caller.
+const taskCommentErrorCode = (message?: string): HTTP_statusCode => {
+  if (!message) return HTTP_statusCode.InternalServerError;
+  if (
+    message === COMMENT_ERRORS.taskNotFound ||
+    message === COMMENT_ERRORS.commentNotFound
+  )
+    return HTTP_statusCode.NotFound;
+  if (
+    message === COMMENT_ERRORS.notAuthorized ||
+    message === COMMENT_ERRORS.notAuthor ||
+    message === COMMENT_ERRORS.notDeletable
+  )
+    return HTTP_statusCode.NoAccess;
+  if (
+    message === COMMENT_ERRORS.emptyBody ||
+    message === COMMENT_ERRORS.missingIds ||
+    message === "task_id is required"
+  )
+    return HTTP_statusCode.BadRequest;
+  if (message === "User not authenticated") return HTTP_statusCode.unAuthorized;
+  return HTTP_statusCode.InternalServerError;
+};
+
 export class userController {
   public async task(req: Request, res: Response) {
     try {
-      const { created_by, assigned_to, project, project_id, description, priority, end_time, start_date, due_date, status, tags, subtasks, parent_id, room_id } = req.body;
+      const { created_by, assigned_to, project, project_id, description, priority, end_time, start_date, due_date, status, tags, subtasks, parent_id, room_id, sequential } = req.body;
       const data = await UserService.addTask({
         created_by,
         assigned_to,
@@ -58,6 +88,10 @@ export class userController {
         // Sent by the room page alongside project_id, assigned_to, priority,
         // status and group_id. Omitted everywhere else, so it stays null.
         room_id,
+        // The room's shared task: when true its subtasks run strictly in
+        // position order. Omitted everywhere else, so it stays false and no
+        // existing caller changes behaviour.
+        sequential,
       });
       sendResponse(res, HTTP_statusCode.CREATED, {
         success: true,
@@ -67,8 +101,19 @@ export class userController {
     } catch (error: any) {
       const isLocked =
         error.message === "Daily log is locked. Cannot add new task.";
+      // A rejected subtask assignee has to arrive as a 400 with the message
+      // intact. TaskFailed is 304, and a 304 carries no body, so the index of
+      // the offending row would never reach the caller — which is the entire
+      // reason the check names one.
+      const isBadRequest =
+        error.name === "SubtaskValidationError" ||
+        error.message === "Room not found" ||
+        error.message === "Either project or project_id is required" ||
+        String(error.message).startsWith("Project ");
       const statusCode = isLocked
         ? HTTP_statusCode.locked
+        : isBadRequest
+        ? HTTP_statusCode.BadRequest
         : HTTP_statusCode.TaskFailed;
       sendResponse(res, statusCode, {
         success: false,
@@ -157,11 +202,17 @@ export class userController {
           HTTP_statusCode.BadRequest,
       };
 
+      // Section 4(a): starting a subtask out of turn on a sequential parent.
+      // Matched on the error's name, not its message — the message is written
+      // to be shown to the user as-is ("Build the UI can't start until Design
+      // the screens is completed") and has to stay free to change.
       const statusCode =
-        errorStatusMap[error.message] ||
-        (String(error.message).startsWith("Invalid status")
-          ? HTTP_statusCode.BadRequest
-          : HTTP_statusCode.TaskFailed);
+        error.name === "SequentialBlockedError"
+          ? HTTP_statusCode.Conflict
+          : errorStatusMap[error.message] ||
+            (String(error.message).startsWith("Invalid status")
+              ? HTTP_statusCode.BadRequest
+              : HTTP_statusCode.TaskFailed);
 
       sendResponse(res, statusCode, {
         success: false,
@@ -169,6 +220,92 @@ export class userController {
       });
     }
   }
+  // ── Task comments ─────────────────────────────────────────────────────────
+  //
+  // Three writes and no GET: comments travel inside /task-list. The writes are
+  // server-side rather than letting the client PATCH the comments array
+  // because a whole-array write from a browser both loses comments that landed
+  // concurrently and lets anyone rewrite someone else's.
+  public async addTaskComment(req: Request, res: Response) {
+    try {
+      const user_id = req.user?.id;
+      if (!user_id) throw new Error("User not authenticated");
+      const { task_id, body } = req.body ?? {};
+      if (!task_id) throw new Error("task_id is required");
+
+      const comment = await taskCommentService.addComment({
+        task_id,
+        body,
+        user_id,
+        role: req.user?.role,
+      });
+      sendResponse(res, HTTP_statusCode.CREATED, {
+        success: true,
+        message: "Comment added successfully",
+        data: comment,
+      });
+    } catch (error: any) {
+      sendResponse(res, taskCommentErrorCode(error.message), {
+        success: false,
+        message: error.message || "Failed to add comment",
+      });
+    }
+  }
+
+  public async updateTaskComment(req: Request, res: Response) {
+    try {
+      const user_id = req.user?.id;
+      if (!user_id) throw new Error("User not authenticated");
+      const { task_id, comment_id, body } = req.body ?? {};
+
+      const comment = await taskCommentService.editComment({
+        task_id,
+        comment_id,
+        body,
+        user_id,
+        role: req.user?.role,
+      });
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "Comment updated successfully",
+        data: comment,
+      });
+    } catch (error: any) {
+      sendResponse(res, taskCommentErrorCode(error.message), {
+        success: false,
+        message: error.message || "Failed to update comment",
+      });
+    }
+  }
+
+  public async deleteTaskComment(req: Request, res: Response) {
+    try {
+      const user_id = req.user?.id;
+      if (!user_id) throw new Error("User not authenticated");
+      // Query params, not a body: DELETE with a body is refused or dropped by
+      // enough proxies that it is not worth relying on.
+      const task_id = req.query.task_id as string;
+      const comment_id = req.query.comment_id as string;
+
+      const result = await taskCommentService.deleteComment({
+        task_id,
+        comment_id,
+        user_id,
+        role: req.user?.role,
+      });
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "Comment deleted successfully",
+        data: result,
+      });
+    } catch (error: any) {
+      sendResponse(res, taskCommentErrorCode(error.message), {
+        success: false,
+        message: error.message || "Failed to delete comment",
+      });
+    }
+  }
+
   public async listProjects(req: Request, res: Response) {
     try {
       const userId = req.user?.id;

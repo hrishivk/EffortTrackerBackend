@@ -19,6 +19,14 @@ export class Workspace extends Model {
   // deleted project instead of going with it.
   public project_id!: string | null;
   public created_by!: string | null;
+  // NULL means "not completed". Kept in step with `status` by the repository,
+  // so these can never date a workspace that is back in progress.
+  public completed_at!: Date | null;
+  public completed_by!: string | null;
+  // When the completion was last ANNOUNCED to somebody. Separate from
+  // completed_at on purpose: completing tells nobody, and a workspace can be
+  // completed and never announced. Re-stamped by a reminder.
+  public announced_at!: Date | null;
   public created_at!: Date;
   public updated_at!: Date;
 }
@@ -68,6 +76,26 @@ export const initWorkspaceModel = (sequelize: Sequelize) => {
         allowNull: true,
         references: { model: "users", key: "id" },
         onDelete: "SET NULL",
+      },
+      // Migration 019. Like every other column added to an existing table,
+      // these have to be declared here or Sequelize never SELECTs or writes
+      // them — sync() will not add them either.
+      completed_at: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
+      completed_by: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+        references: { model: "users", key: "id" },
+        // A completion outlives the person who recorded it.
+        onDelete: "SET NULL",
+      },
+      // Migration 020. NULL means nobody has been told yet, which is what the
+      // Announce it strip tests on load.
+      announced_at: {
+        type: DataTypes.DATE,
+        allowNull: true,
       },
       created_at: {
         type: DataTypes.DATE,

@@ -2,7 +2,9 @@ import { Op } from "sequelize";
 import { WorkspaceRepository } from "../repositories/workspace.repository";
 import { Role } from "../Enums/Role";
 import { RateLimiter } from "../utils/rateLimiter";
+import { NotificationRepository } from "../repositories/notification.repository";
 import {
+  MAX_ANNOUNCE_RECIPIENTS,
   JoinOutcome,
   LockedWorkspaceStub,
   RoomInput,
@@ -18,6 +20,7 @@ import {
 } from "../types/workspace.types";
 
 const workspaceRepository = new WorkspaceRepository();
+const notificationRepo = new NotificationRepository();
 
 // 10 join attempts per user per 5 minutes. A correct key is not counted (see
 // RateLimiter.forget), so this only ever bites someone guessing.
@@ -27,6 +30,25 @@ const joinLimiter = new RateLimiter(10, 5 * 60 * 1000);
 // open /:role/workspace-setup. Everyone else gets a 403 on a write but can
 // still READ the workspaces they are a member of.
 const MANAGING_ROLES: string[] = [Role.SuperAdmin, Role.Admin];
+
+// Accepts the array the picker sends, or a comma-separated string, and returns
+// trimmed, de-duplicated ids. Same shape of leniency as normalizeTags on the
+// task side, so the two create paths behave alike.
+const normalizeIdList = (input: unknown): string[] => {
+  if (input === undefined || input === null) return [];
+  const raw = Array.isArray(input)
+    ? input
+    : typeof input === "string"
+    ? input.split(",")
+    : [];
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string" && typeof item !== "number") continue;
+    const id = String(item).trim();
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out;
+};
 
 // Field limits. Matched to the inputs so the frontend can cap at the same
 // numbers instead of discovering them from a 400.
@@ -44,6 +66,10 @@ const NOT_FOUND = "Workspace not found";
 // Same reasoning one level down: a room the caller is not an active member of
 // is reported missing, not forbidden.
 const ROOM_NOT_FOUND = "Room not found";
+
+// 409 from the announce route: the message it sends asserts the work is
+// finished, so it refuses a workspace that is not.
+const WORKSPACE_NOT_COMPLETED = "Workspace is not completed";
 
 const requireManagingRole = (callerRole?: string) => {
   if (!callerRole || !MANAGING_ROLES.includes(callerRole)) {
@@ -561,6 +587,38 @@ export class WorkspaceService {
             : await validateProjectId(body.project_id);
       }
 
+      // ── Completion bookkeeping ──────────────────────────────────────────
+      //
+      // completed_at / completed_by are derived here, never accepted from the
+      // caller: they are a record of what the server did, so letting a client
+      // set them would let it backdate a completion or credit someone else.
+      //
+      // Kept strictly in step with `status`. Moving TO completed stamps both;
+      // moving AWAY from completed clears both, so a reopened workspace can
+      // never still carry a completion date. Re-sending `completed` on an
+      // already-completed workspace leaves the original stamp alone — the first
+      // completion is the real one.
+      const wasCompleted = workspace.status === "completed";
+      if (patch.status !== undefined) {
+        if (patch.status === "completed" && !wasCompleted) {
+          patch.completed_at = new Date();
+          patch.completed_by = callerId;
+        } else if (patch.status !== "completed" && wasCompleted) {
+          patch.completed_at = null;
+          patch.completed_by = null;
+        }
+      }
+
+      // Announcing is NOT part of this call, deliberately. Completing a
+      // workspace tells nobody: who needs to hear that a piece of work is done
+      // is a judgement the person finishing it makes, and firing at everybody
+      // automatically would make the notification worthless. That is what
+      // POST /workspaces/notify-completed exists for.
+      //
+      // An earlier build accepted `notify_user_ids` here. Removed rather than
+      // kept as an alias: two routes writing the same notification rows drift
+      // apart, and this one made announcing a side effect of a status edit.
+
       if (Object.keys(patch).length === 0) {
         throw new Error(
           "Nothing to update: send name, code, status, visibility, description or project_id"
@@ -585,6 +643,109 @@ export class WorkspaceService {
       }
       throw error;
     }
+  }
+
+  // GET /role-user/workspaces/notify-targets
+  //
+  // The picker's options. Managing roles only, matching who may press the
+  // button in the first place — a plain member cannot complete a workspace, so
+  // they have no use for the list.
+  public async listNotifyTargets(
+    callerId: string,
+    callerRole: string | undefined
+  ) {
+    requireManagingRole(callerRole);
+    return await workspaceRepository.notifiableManagers(callerId);
+  }
+
+  // POST /role-user/workspaces/notify-completed
+  //
+  // The Announce it strip. This is the ONLY place the frontend raises a
+  // notification rather than reading one — every other notification is emitted
+  // by the API off its own events — which is why the validation below is strict
+  // and entirely up front: a bad request must write nothing at all.
+  //
+  // Announcing is deliberately not a side effect of the status change. See the
+  // note in updateWorkspace.
+  public async notifyCompleted(
+    callerId: string,
+    callerRole: string | undefined,
+    body: any
+  ): Promise<{ notified: number; announced_at: Date }> {
+    const workspace_id = String(body?.workspace_id ?? "").trim();
+    if (!workspace_id) throw new Error("Workspace id is required");
+
+    // 404. Loaded with its project because the message names it.
+    const workspace = await workspaceRepository.findRawWithProject(workspace_id);
+    if (!workspace) throw new Error(NOT_FOUND);
+
+    // 403 when the caller role cannot manage workspaces at all.
+    //
+    // One deliberate deviation from the spec: a workspace belonging to a
+    // DIFFERENT AM answers 404, not 403, because that is what every other
+    // workspace read does. A 403 there would confirm the workspace exists,
+    // which is exactly what the key-guessing defence is built to prevent.
+    await this.assertCanManage(callerId, callerRole, workspace as any);
+
+    // 409. The message asserts the work is finished, so announcing an
+    // unfinished workspace would put a false statement in somebody bell.
+    if (workspace.status !== "completed") {
+      throw new Error(WORKSPACE_NOT_COMPLETED);
+    }
+
+    const user_ids = normalizeIdList(body?.user_ids);
+    if (!user_ids.length) {
+      throw new Error("user_ids must name at least one recipient");
+    }
+    if (user_ids.length > MAX_ANNOUNCE_RECIPIENTS) {
+      throw new Error(
+        `user_ids must name at most ${MAX_ANNOUNCE_RECIPIENTS} recipients`
+      );
+    }
+
+    // 400, naming the offending entry. Every id must be one that
+    // notify-targets would have returned; a failure here means the picker is
+    // out of date, so saying WHICH entry is stale is the useful answer.
+    const bad = await workspaceRepository.invalidNotifyTargets(
+      callerId,
+      user_ids
+    );
+    if (bad.length) {
+      const first = bad[0];
+      throw new Error(
+        `user_ids[${first.index}] (${first.id}) is not a valid recipient: ${first.reason}`
+      );
+    }
+
+    const [actor]: any[] = await workspaceRepository.usersLite([callerId]);
+    const actorName = actor?.fullName || "Someone";
+    const projectName = (workspace as any).project?.name;
+
+    // Rendered verbatim by the client, so the wording IS the contract:
+    //   "WebApps" (Effort Tracker) has been marked completed by Lakshman.
+    // The project clause is dropped rather than left blank when the workspace
+    // has no project, so an empty "()" never ships to the bell.
+    const message = projectName
+      ? `"${workspace.name}" (${projectName}) has been marked completed by ${actorName}.`
+      : `"${workspace.name}" has been marked completed by ${actorName}.`;
+
+    // One row per recipient. No uniqueness check and no dedupe against earlier
+    // announces: sending twice is allowed, because a reminder is legitimate.
+    await notificationRepo.createMany(user_ids, {
+      type: "workspace_completed",
+      title: "Workspace Completed",
+      message,
+      // The WORKSPACE id. The client opens /{role}/workspace?ws=<reference_id>
+      // from it, so any other id here produces a dead link.
+      reference_id: workspace.id,
+    });
+
+    // Stamped only after the rows are written, so a failed announce never
+    // leaves the strip claiming somebody was told.
+    const announced_at = new Date();
+    await workspaceRepository.markAnnounced(workspace, announced_at);
+
+    return { notified: user_ids.length, announced_at };
   }
 
   // DELETE /role-user/workspaces?id=…

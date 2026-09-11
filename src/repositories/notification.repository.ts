@@ -22,6 +22,42 @@ export class NotificationRepository {
     }
   }
 
+  // One notification per recipient, de-duplicated, with blank ids dropped.
+  //
+  // Fan-out exists because three of the four room shared-task events go to a
+  // SET of people (everyone on the task, minus the author) rather than to one.
+  // De-duplication matters there: a person who owns the main task AND a subtask
+  // appears twice in the naive recipient list and would get the same comment
+  // notification twice.
+  //
+  // bulkCreate rather than a loop: the recipient list is the whole room, so a
+  // loop is one round trip per member.
+  public async createMany(
+    user_ids: string[],
+    data: {
+      type: string;
+      title: string;
+      message: string;
+      reference_id?: string;
+    }
+  ) {
+    try {
+      const recipients = [...new Set((user_ids ?? []).filter(Boolean))];
+      if (!recipients.length) return [];
+      return await Notification.bulkCreate(
+        recipients.map((user_id) => ({
+          user_id,
+          type: data.type,
+          title: data.title,
+          message: data.message,
+          reference_id: data.reference_id || null,
+        }))
+      );
+    } catch (error) {
+      throw error;
+    }
+  }
+
   public async getByUserId(
     user_id: string,
     page: number = 1,

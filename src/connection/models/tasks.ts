@@ -1,4 +1,7 @@
 import { Sequelize, Model, DataTypes } from "sequelize";
+// Type-only: task.types.ts imports Task back, so this must not become a
+// runtime require or the two modules deadlock on load.
+import type { TaskComment } from "../../types/task.types";
 
 export class Task extends Model {
   public id!: string;
@@ -10,6 +13,13 @@ export class Task extends Model {
   public room_id!: string | null;
   // Set on a subtask; null on a top-level task.
   public parent_id!: string | null;
+  // Order of this child inside its parent. Only meaningful with parent_id set.
+  public position!: number;
+  // Set on the PARENT: its children may only start in `position` order.
+  public sequential!: boolean;
+  // Comments on this row, newest last. A subtask is a row in this same table,
+  // so this covers comments on a main task and on a single subtask alike.
+  public comments!: TaskComment[];
   // Free-form labels. Applies to subtasks too — same table.
   public tags!: string[];
   public description!: string;
@@ -69,6 +79,33 @@ export const initTaskModel = (sequelize: Sequelize) => {
           key: "id",
         },
         onDelete: "CASCADE",
+      },
+      // NOT NULL with a 0 default rather than nullable: the sequential rule
+      // compares positions, and a NULL would make a child look like it has no
+      // predecessor and start out of turn instead of being ordered.
+      position: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      // Lives on the parent. Default false, so every task that already exists
+      // keeps letting its children start in any order.
+      sequential: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+      },
+      // JSONB, not JSON: every write goes through a pure-SQL jsonb expression
+      // (`||` to append, jsonb_agg to edit or delete) so three people
+      // commenting in the same moment cannot drop each other's comment. `json`
+      // has no such operators and would force a read-modify-write in Node.
+      //
+      // Never assign to this attribute and save() the instance — that IS the
+      // read-modify-write. Go through TaskCommentRepository.
+      comments: {
+        type: DataTypes.JSONB,
+        allowNull: false,
+        defaultValue: [],
       },
       group_id: {
         type: DataTypes.STRING(20),

@@ -15,9 +15,49 @@ import { TaskStatusUpdate, TaskWithDailyLog } from "../types/task.types";
 import { Task } from "../connection/models/tasks";
 import { DailyTaskLog } from "../connection/models/daily_task_logs";
 import { Project } from "../connection/models/project";
+import { Database } from "../connection/db/dbConnection";
+import { Transaction } from "sequelize";
+import { TaskNotificationService } from "./task-notification.service";
+import {
+  capComments,
+  collectCommentUserIds,
+  decorateTask,
+  decorateTasks,
+  statusSlug,
+  UserLite,
+} from "../utils/taskView";
 const userRepository = new UserRepository();
 const taskGroupRepository = new TaskGroupRepository();
 const workspaceRepository = new WorkspaceRepository();
+const taskNotifications = new TaskNotificationService();
+
+// Raised when a subtask is started out of turn on a sequential parent. Carries
+// its own name so the controller can answer 409 without matching on the
+// message text - the message is written to be shown to the user as-is
+// ("Build the UI can't start until Design the screens is completed"), so it
+// must be free to change without breaking the status mapping.
+export class SequentialBlockedError extends Error {
+  public readonly name = "SequentialBlockedError";
+}
+
+// Raised by the create path when a subtask names somebody who is not a member
+// of the room. Names the offending index, because the picker only offers room
+// members - a failure here means something is out of date on the client, and
+// saying which row is out of date is the whole point of the check.
+export class SubtaskValidationError extends Error {
+  public readonly name = "SubtaskValidationError";
+}
+
+// Resolves the comment authors for a page of tasks in one query, so the names
+// cost one round trip for the whole response rather than one per comment.
+const commentAuthorsFor = async (
+  rows: any[]
+): Promise<Map<string, UserLite>> => {
+  const ids = collectCommentUserIds(rows);
+  if (!ids.length) return new Map();
+  const users = await userRepository.findUsersLite(ids);
+  return new Map(users.map((u: any) => [u.id, u as UserLite]));
+};
 
 
 // Status advances one step at a time along yet_to_start -> in_progress ->
@@ -176,6 +216,11 @@ export class userService {
                 start_date: task.dataValues.start_date,
                 due_date: task.dataValues.due_date,
                 tags: task.dataValues.tags,
+                // Both carried, or an unfinished room task comes back the next
+                // morning off its room board and with its ordering rule
+                // dropped — the children would all become startable at once.
+                room_id: task.dataValues.room_id,
+                sequential: task.dataValues.sequential,
               });
 
               // Subtasks come with their parent, re-parented to the new copy.
@@ -183,12 +228,49 @@ export class userService {
               // only returns parents — and if they were carried as top-level
               // tasks instead they would each become their own board card.
               // Finished subtasks stay behind, same rule as their parent.
+              //
+              // Each child is carried into ITS OWN assignee's log for the new
+              // date, not into the log of whoever happens to be logging in.
+              // Copying them all into this user's log would quietly hand three
+              // people's work to one person overnight, which is precisely what
+              // per-subtask assignment exists to prevent. This user's login is
+              // the only one that can carry them: a member's own login sees
+              // only parent rows in their log, and a child is not one.
               const subtasks: any[] = (task as any).subtasks ?? [];
+              const carryLogs = new Map<string, any>([[id, todayLog]]);
               for (const sub of subtasks) {
                 const subStatus = String(sub.status ?? "").toLowerCase().trim();
                 if (subStatus === "completed") continue;
+
+                const subAssignee: string =
+                  sub.dailyLog?.assigned_to ??
+                  sub.dailyLog?.dataValues?.assigned_to ??
+                  id;
+                let subLog = carryLogs.get(subAssignee);
+                if (!subLog) {
+                  const existing = await userRepository.findDailyLogs(
+                    formattedToday,
+                    subAssignee
+                  );
+                  subLog =
+                    existing?.find(
+                      (log: any) =>
+                        (log.assigned_to ?? log.dataValues?.assigned_to) ===
+                        subAssignee
+                    ) ??
+                    (await userRepository.createDailyTaskLog(
+                      id,
+                      subAssignee,
+                      formattedToday,
+                      sub.project_id ?? task.project_id
+                    ));
+                  carryLogs.set(subAssignee, subLog);
+                }
+                // A locked day stays locked; the subtask simply does not carry.
+                if (subLog?.dataValues?.locked) continue;
+
                 await userRepository.createNewTask({
-                  dailyTaskLog: todayLog,
+                  dailyTaskLog: subLog,
                   project_id: sub.project_id ?? task.project_id,
                   description: sub.description,
                   priority: sub.priority,
@@ -197,6 +279,10 @@ export class userService {
                   due_date: sub.due_date,
                   parent_id: carried.id,
                   tags: sub.tags,
+                  room_id: sub.room_id ?? task.dataValues.room_id,
+                  // Kept, so the order survives the night. Without it every
+                  // carried child would sit on 0 and none would block another.
+                  position: sub.position,
                 });
               }
             }
@@ -235,7 +321,10 @@ export class userService {
       throw new Error(error.message || "logout failed");
     }
   }
-  public async addTask(data: AddTask): Promise<Task> {
+  // Returns the decorated read model, not a bare Task instance: the create
+  // modal renders the card it just made from this response, so it needs the
+  // same per-child assignee / position / is_blocked shape /task-list returns.
+  public async addTask(data: AddTask): Promise<any> {
     try {
       const { created_by, assigned_to, project, project_id, description, priority, end_time, start_date, due_date, status } = data;
       let resolvedProjectId = project_id;
@@ -259,6 +348,47 @@ export class userService {
           throw new Error("Room not found");
         }
         resolvedRoomId = room.id;
+      }
+
+      // Every subtasks[].assigned_to must be an ACTIVE member of the room, and
+      // the check runs BEFORE anything is written: a payload with one bad
+      // assignee creates no task at all, rather than a main task with a hole
+      // where somebody's subtask should be.
+      //
+      // Active members only, so a pending join request cannot be handed work.
+      // Without a room_id there is no membership list to check against, and a
+      // per-subtask assignee is then validated only for existence — the
+      // stricter rule would break assigning subtasks outside a room, which
+      // this endpoint has always allowed.
+      const subtaskInputs = data.subtasks ?? [];
+      const namedAssignees = subtaskInputs
+        .map((sub) => sub.assigned_to)
+        .filter((v): v is string => !!v);
+
+      if (namedAssignees.length) {
+        const allowed = resolvedRoomId
+          ? new Set(
+              await workspaceRepository.activeRoomMemberIds(resolvedRoomId)
+            )
+          : null;
+        const missing = allowed
+          ? []
+          : await workspaceRepository.missingUserIds(namedAssignees);
+
+        for (let i = 0; i < subtaskInputs.length; i++) {
+          const who = subtaskInputs[i].assigned_to;
+          if (!who) continue;
+          if (allowed && !allowed.has(who)) {
+            throw new SubtaskValidationError(
+              `subtasks[${i}].assigned_to (${who}) is not a member of room ${resolvedRoomId}`
+            );
+          }
+          if (!allowed && missing.includes(who)) {
+            throw new SubtaskValidationError(
+              `subtasks[${i}].assigned_to (${who}) is not a known user`
+            );
+          }
+        }
       }
 
       const dailytaskTime = new Date().toISOString().split("T")[0];
@@ -305,16 +435,66 @@ export class userService {
         parent_id: data.parent_id ?? null,
         room_id: resolvedRoomId,
         tags: data.tags,
+        // Set on the MAIN task, so its children run in position order. Only
+        // meaningful on a parent; harmless (and false) everywhere else.
+        sequential: data.sequential,
       });
 
-      for (const sub of data.subtasks ?? []) {
-        const description = (sub.description ?? sub.name ?? "").trim();
-        if (!description) continue;
+      // One daily log per assignee, cached so three subtasks for the same
+      // person do not each cost a lookup.
+      //
+      // This is what actually splits a task across people. Assignment is not a
+      // column on tasks — it lives on the daily log's (created_by, assigned_to)
+      // pair, the same place the rest of the app reads it from as
+      // dailyLog.assignedUser. So a subtask with its own assignee gets its own
+      // log, and the three children of one parent sit in three different
+      // people's logs while remaining children of one row.
+      const logsByAssignee = new Map<string, any>();
+      if (assigned_to) logsByAssignee.set(assigned_to, dailyTaskLog);
+
+      const logFor = async (assignee: string) => {
+        const cached = logsByAssignee.get(assignee);
+        if (cached) return cached;
+        let log = await userRepository.findDailyTaskLog(
+          dailytaskTime,
+          created_by,
+          assignee
+        );
+        if (!log) {
+          log = await userRepository.createDailyTaskLog(
+            created_by,
+            assignee,
+            dailytaskTime,
+            resolvedProjectId
+          );
+        }
+        if (log?.dataValues?.locked) {
+          throw new Error("Daily log is locked. Cannot add new task.");
+        }
+        logsByAssignee.set(assignee, log);
+        return log;
+      };
+
+      const createdSubtasks: Array<{
+        task: Task;
+        assignee: string | undefined;
+      }> = [];
+
+      for (let index = 0; index < subtaskInputs.length; index++) {
+        const sub = subtaskInputs[index];
+        const subDescription = (sub.description ?? sub.name ?? "").trim();
+        if (!subDescription) continue;
         const subStatus = sub.status === "pending" ? "yet_to_start" : sub.status;
-        await userRepository.createNewTask({
-          dailyTaskLog,
+
+        // No assignee falls back to the parent's log, which is exactly the
+        // pre-feature behaviour: the subtask belongs to whoever owns the parent.
+        const assignee = sub.assigned_to;
+        const subLog = assignee ? await logFor(assignee) : dailyTaskLog;
+
+        const created = await userRepository.createNewTask({
+          dailyTaskLog: subLog,
           project_id: resolvedProjectId,
-          description,
+          description: subDescription,
           priority: sub.priority
             ? sub.priority.charAt(0).toUpperCase() +
               sub.priority.slice(1).toLowerCase()
@@ -328,20 +508,57 @@ export class userService {
           // and its children nowhere.
           room_id: resolvedRoomId,
           tags: sub.tags ?? data.tags,
+          // 1-based on the array index when the caller sends no position, so a
+          // client that simply lists them in order gets the ordering it meant.
+          // An explicit position wins, including a deliberate tie.
+          position:
+            sub.position !== undefined && sub.position !== null
+              ? Number(sub.position)
+              : index + 1,
+        });
+        createdSubtasks.push({ task: created, assignee });
+      }
+
+      // Section 6, event 1: "a subtask is assigned to you".
+      //
+      // After every write, so a notification failure cannot leave a
+      // half-created task behind. TaskNotificationService swallows its own
+      // errors for the same reason.
+      const [actor] = created_by
+        ? await userRepository.findUsersLite([created_by])
+        : [];
+      for (const { task, assignee } of createdSubtasks) {
+        if (!assignee) continue;
+        await taskNotifications.subtaskAssigned({
+          assignee_id: assignee,
+          actor_id: created_by,
+          actor_name: (actor as any)?.fullName ?? null,
+          subtask_description: (task as any).description,
+          parent_description: description,
+          parent_id: parentTask.id,
+          position: (task as any).position,
+          sequential: (parentTask as any).sequential === true,
         });
       }
 
       // Re-read so the response carries the subtasks; fall back to the row we
       // just created if the re-read somehow misses.
-      const newTask =
-        (await userRepository.findTaskWithSubtasks(parentTask.id)) ?? parentTask;
-      return newTask;
+      const newTask = await userRepository.findTaskWithSubtasks(parentTask.id);
+      if (!newTask) return parentTask;
+
+      // The same read model /task-list returns, so the modal can render the
+      // card it just created without a second request: every child carries its
+      // own assignee, position, is_blocked and blocked_by.
+      const authors = await commentAuthorsFor([newTask]);
+      return decorateTask(newTask, authors);
     } catch (error: any) {
       console.error(" Error in addTask:", error.message);
       throw new Error(error.message || "Failed");
     }
   }
-  public async listTask(data: any): Promise<{ data: Task[]; totalPages: number }> {
+  // Returns the decorated read model rather than raw Task instances — see
+  // utils/taskView. The shape is a superset of what it used to return.
+  public async listTask(data: any): Promise<{ data: any[]; totalPages: number }> {
     try {
       const { date, id, role, assigned_to, project, status, page = 1, limit = 10 } = data;
       const skip = (page - 1) * limit;
@@ -356,22 +573,60 @@ export class userService {
       if (!date && projectId) {
         const { tasks, totalCount } = await userRepository.tasksByProject(projectId, skip, limit, status);
         return {
-          data: tasks,
+          data: decorateTasks(tasks, await commentAuthorsFor(tasks)),
           totalPages: Math.ceil(totalCount / limit),
         };
       }
 
       const todayLog = await userRepository.findDailyLogs(date, id, role, assigned_to as string);
-      if (!todayLog || todayLog.length === 0) {
+      const logIds = (todayLog ?? []).map((log: any) => log.id);
+
+      // Section 3 — who gets the task. The old rule was "the daily logs you
+      // own", which scoped by assignee and so showed the main task to nobody
+      // but the parent's owner: the other two members of a shared task saw
+      // nothing at all.
+      //
+      // Rules 1 and 3 ("assigned to me", "created by me") are already covered
+      // by findDailyLogs, which selects on assigned_to OR created_by. The two
+      // widenings below add rule 2 and the room read.
+      //
+      // Rule 2: any parent one of MY subtasks hangs off. The parent still comes
+      // back whole, with all of its subtasks, so somebody who is only on
+      // subtask 3 can still see who is ahead of them and whether that person
+      // has finished.
+      const parentIds = await userRepository.parentIdsForChildLogs(logIds);
+
+      // The authorization decision, taken as suggested: a task with a room_id
+      // is readable by every active member of that room; a task without one
+      // keeps the stricter daily-log rule. SP is skipped because findDailyLogs
+      // already hands them every log for the date.
+      //
+      // roomLogIds bounds it to the day being asked for. Without that bound,
+      // opening today's board would drag in every task the room has ever had.
+      const roomIds =
+        role === "SP" ? [] : await workspaceRepository.roomIdsForUser(id);
+      const roomLogIds =
+        roomIds.length && date ? await userRepository.logIdsForDate(date) : [];
+
+      // Nothing to look in and no room to look through: the caller genuinely
+      // has no board for this date. Checked after the widenings rather than
+      // straight off findDailyLogs, so a room member with no log of their own
+      // still sees the room's tasks.
+      if (!logIds.length && !(roomIds.length && roomLogIds.length)) {
         throw new Error("No task found");
       }
-      const logIds = todayLog.map((log: any) => log.id);
 
-      const { tasks, totalCount } = await userRepository.todayTask(logIds, projectId, skip, limit, status);
-      console.log('taskss',tasks)
+      const { tasks, totalCount } = await userRepository.todayTask(
+        logIds,
+        projectId,
+        skip,
+        limit,
+        status,
+        { parentIds, roomIds, roomLogIds }
+      );
 
       return {
-        data: tasks,
+        data: decorateTasks(tasks, await commentAuthorsFor(tasks)),
         totalPages: Math.ceil(totalCount / limit),
       };
     } catch (error) {
@@ -432,10 +687,90 @@ export class userService {
       const effectiveStatus = status ?? derivedStatus;
       assertForwardTransition(task.dataValues.status, effectiveStatus);
 
-      return await userRepository.updateTaskLane(task, {
-        status: effectiveStatus,
-        group_id,
-      });
+      const parentId: string | null = (task as any).parent_id ?? null;
+
+      // One transaction around the order check, the child's own update and the
+      // parent roll-up. Section 4(b): the roll-up used to happen in the
+      // frontend, where three people acting from three browsers raced and left
+      // the parent on the wrong status.
+      const sequelize = Database.getSequelize();
+      const { updated, parent } = await sequelize.transaction(
+        async (t: Transaction) => {
+          // Section 4(a): enforce the order. Inside the transaction and after
+          // a fresh read of the siblings, so this is a real backstop for two
+          // people clicking Start in the same moment and not just a repeat of
+          // the check the UI already made.
+          if (parentId && effectiveStatus === "in_progress") {
+            const parentRow = await userRepository.findTaskRaw(parentId, t);
+            if (parentRow && (parentRow as any).sequential === true) {
+              const siblings = await userRepository.findChildren(parentId, t);
+              const myPosition = Number((task as any).position ?? 0);
+              const blocker = siblings.find(
+                (sibling: any) =>
+                  Number(sibling.position ?? 0) < myPosition &&
+                  statusSlug(sibling.status) !== "completed"
+              );
+              if (blocker) {
+                // Written to be shown to the user as-is.
+                throw new SequentialBlockedError(
+                  `${(task as any).description} can't start until ${
+                    (blocker as any).description
+                  } is completed`
+                );
+              }
+            }
+          }
+
+          const child = await userRepository.updateTaskLane(
+            task,
+            { status: effectiveStatus, group_id },
+            t
+          );
+
+          const rolled = parentId
+            ? await userRepository.rollUpParentStatus(parentId, t)
+            : null;
+
+          return { updated: child, parent: rolled };
+        }
+      );
+
+      // Section 6, event 2 — the important one. Raised after the commit, so
+      // the person told it is their turn can actually start when they act on
+      // it, and so a notification failure cannot roll back a completed
+      // subtask.
+      if (parentId && statusSlug(effectiveStatus) === "completed" && parent) {
+        const siblings = await userRepository.findChildren(parentId);
+        await taskNotifications.subtaskUnblocked({
+          parent,
+          children: siblings,
+          completed_child: updated,
+        });
+      }
+
+      // The updated child, plus the parent as the server now has it. `parent`
+      // is the whole card with every subtask re-decorated, so the board can
+      // replace it outright instead of patching a status it guessed at. Null
+      // for a top-level task.
+      //
+      // Additive: everything the response carried before is still on the
+      // object at the same key.
+      const parentView = parent
+        ? await userRepository.findTaskWithSubtasks((parent as any).id)
+        : null;
+
+      // capComments rather than decorateTask on the child: this read does not
+      // fetch its subtasks, and decorateTask would report `subtasks: []`, which
+      // a client holding a real list would read as "all deleted". It does keep
+      // the comment array from arriving uncapped on every status click.
+      const authors = await commentAuthorsFor(
+        parentView ? [updated, parentView] : [updated]
+      );
+
+      return {
+        ...capComments(updated, authors),
+        parent: parentView ? decorateTask(parentView, authors) : null,
+      };
     } catch (error) {
       console.error("Error in updateStatus:", error);
       throw error;

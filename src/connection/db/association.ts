@@ -268,6 +268,15 @@ export class Associations {
       as: "createdWorkspaces",
     });
 
+    // Workspace <-> User (whoever marked it completed). SET NULL, not CASCADE:
+    // a completion outlives the person who recorded it, same rule as
+    // room_members.decided_by.
+    Workspace.belongsTo(User, {
+      foreignKey: "completed_by",
+      as: "completedBy",
+      onDelete: "SET NULL",
+    });
+
     // Workspace <-> Room
     Room.belongsTo(Workspace, {
       foreignKey: "workspace_id",

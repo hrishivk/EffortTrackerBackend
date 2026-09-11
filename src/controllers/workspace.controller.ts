@@ -42,7 +42,12 @@ const workspaceErrorCode = (message?: string): HTTP_statusCode => {
   )
     return HTTP_statusCode.NotFound;
 
-  if (message === "A workspace with that code already exists")
+  if (
+    message === "A workspace with that code already exists" ||
+    // Announcing a workspace that is not finished. 409 rather than 400: the
+    // request is well formed, the workspace is simply in the wrong state.
+    message === "Workspace is not completed"
+  )
     return HTTP_statusCode.Conflict;
 
   // Only the join endpoint is throttled — the one place a wrong guess is cheap.
@@ -73,6 +78,7 @@ const workspaceErrorCode = (message?: string): HTTP_statusCode => {
     message.startsWith("A project is required") ||
     message.startsWith("Unknown user ids") ||
     message.startsWith("Nothing to update") ||
+    message.startsWith("user_ids") ||
     message.startsWith("This workspace has no rooms") ||
     message.startsWith("Room \"")
   )
@@ -153,6 +159,57 @@ export class WorkspaceController {
   }
 
   // PATCH /role-user/workspaces?id=<id>
+  // GET /role-user/workspaces/notify-targets
+  //
+  // The options for the completion button's manager picker. Returning the
+  // resolved set is what keeps the button from producing a 400: the client can
+  // only offer ids the server already accepts.
+  public async getNotifyTargets(req: Request, res: Response) {
+    try {
+      const data = await workspaceService.listNotifyTargets(
+        req.user?.id as string,
+        req.user?.role
+      );
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "notify targets fetched successfully",
+        data,
+      });
+    } catch (error: any) {
+      const message = publicMessage(error);
+      sendResponse(res, workspaceErrorCode(message), {
+        success: false,
+        message: message || "Failed to fetch notify targets",
+      });
+    }
+  }
+
+  // POST /role-user/workspaces/notify-completed
+  //
+  // The Announce it strip. Separate from the status change on purpose:
+  // completing a workspace tells nobody, and who should hear about it is a
+  // judgement the person finishing the work makes.
+  public async notifyCompleted(req: Request, res: Response) {
+    try {
+      const data = await workspaceService.notifyCompleted(
+        req.user?.id as string,
+        req.user?.role,
+        req.body ?? {}
+      );
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "workspace completion announced",
+        data,
+      });
+    } catch (error: any) {
+      const message = publicMessage(error);
+      sendResponse(res, workspaceErrorCode(message), {
+        success: false,
+        message: message || "Failed to announce workspace completion",
+      });
+    }
+  }
+
   public async updateWorkspace(req: Request, res: Response) {
     try {
       const callerId = req.user?.id as string;

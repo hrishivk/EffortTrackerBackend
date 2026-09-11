@@ -7,7 +7,10 @@ import { WorkspaceUnlock } from "../connection/models/workspace_unlock";
 import { Project } from "../connection/models/project";
 import { User } from "../connection/models/user";
 import { Task } from "../connection/models/tasks";
+import { Notification } from "../connection/models/notification";
 import {
+  NOTIFIABLE_ROLES,
+  NotifyTarget,
   RoomCreateInput,
   RoomMemberStatus,
   RoomPatch,
@@ -51,6 +54,15 @@ const workspaceInclude = () => [
     model: Project,
     as: "project",
     attributes: ["id", "name"],
+    required: false,
+  },
+  // Whoever marked the workspace completed. A join rather than a second query:
+  // completed_by on its own is a bare id, and the badge beside the status has
+  // to render a NAME. required: false because almost no workspace is completed.
+  {
+    model: User,
+    as: "completedBy",
+    attributes: ["id", "fullName", "email"],
     required: false,
   },
   {
@@ -167,15 +179,20 @@ export class WorkspaceRepository {
     // people spread as 2 + 1 + 2 is five rows. The hero asks "how many people",
     // so distinct is the right answer, and per-room counts summing to more than
     // it is expected rather than a bug.
-    const [roomCount, memberCount, taskCounts] = await Promise.all([
-      Room.count({ where: { workspace_id: json.id } }),
-      RoomMember.count({
-        where: { workspace_id: json.id, status: ACTIVE },
-        distinct: true,
-        col: "user_id",
-      }),
-      this.taskCountsForWorkspace(json.id),
-    ]);
+    const [roomCount, memberCount, taskCounts, completionNotice] =
+      await Promise.all([
+        Room.count({ where: { workspace_id: json.id } }),
+        RoomMember.count({
+          where: { workspace_id: json.id, status: ACTIVE },
+          distinct: true,
+          col: "user_id",
+        }),
+        this.taskCountsForWorkspace(json.id),
+        // Only for a completed workspace. On a list of mostly-uncompleted
+        // workspaces this costs nothing, which is what keeps it from being an
+        // N+1 — decorateWorkspace runs once per row.
+        json.completed_at ? this.completionNoticeFor(json.id) : null,
+      ]);
 
     if (Array.isArray(json.rooms)) {
       // The room-level scope. undefined means "every room" (SP, or the
@@ -216,6 +233,61 @@ export class WorkspaceRepository {
       member_count: memberCount,
       task_count: taskCounts.total,
       done_count: taskCounts.done,
+      // Drives the icon beside the status. Null for anything not completed, so
+      // `completion_notice !== null` is the single test for "draw the badge".
+      completion_notice: completionNotice,
+    };
+  }
+
+  // Who was told about this workspace being completed, read back from the
+  // notifications that were actually raised.
+  //
+  // Read from `notifications` rather than stored on the workspace: those rows
+  // ARE the record of who was told, so a second copy on the workspace could
+  // disagree with them. It also means no new table and no new column.
+  //
+  // De-duplicated by user, newest first: the button can be pressed more than
+  // once (to tell one more person later), which leaves an earlier manager with
+  // two rows. The newest is kept, so `read` reflects the most recent notice
+  // rather than a stale one.
+  public async completionNoticeFor(workspace_id: string) {
+    const rows: any[] = await Notification.findAll({
+      where: { type: "workspace_completed", reference_id: workspace_id },
+      attributes: ["user_id", "is_read", "created_at"],
+      order: [["created_at", "DESC"]],
+      raw: true,
+    });
+    if (!rows.length) {
+      return { count: 0, unread_count: 0, last_sent_at: null, notified: [] };
+    }
+
+    const users = await this.usersLite(rows.map((r: any) => r.user_id));
+    const byId = new Map(users.map((u: any) => [u.id, u]));
+
+    const seen = new Set<string>();
+    const notified: any[] = [];
+    for (const row of rows) {
+      if (seen.has(row.user_id)) continue;
+      seen.add(row.user_id);
+      const user: any = byId.get(row.user_id);
+      notified.push({
+        id: row.user_id,
+        // Null when the account has since been deleted — the notification row
+        // outlives the user, so the tooltip must cope with a missing name.
+        fullName: user?.fullName ?? null,
+        email: user?.email ?? null,
+        // Whether that manager has actually opened it, so the icon can
+        // distinguish "told" from "seen".
+        read: row.is_read === true,
+        notified_at: row.created_at,
+      });
+    }
+
+    return {
+      count: notified.length,
+      unread_count: notified.filter((n) => !n.read).length,
+      last_sent_at: rows[0].created_at,
+      notified,
     };
   }
 
@@ -283,6 +355,14 @@ export class WorkspaceRepository {
             model: Room,
             as: "rooms",
             attributes: ["id", "name", "description", "position"],
+            required: false,
+          },
+          // Same reason as the detail read: the list draws the same status
+          // badge, so it needs the name too.
+          {
+            model: User,
+            as: "completedBy",
+            attributes: ["id", "fullName", "email"],
             required: false,
           },
         ],
@@ -430,6 +510,10 @@ export class WorkspaceRepository {
         workspace.description = patch.description;
       if (patch.project_id !== undefined)
         workspace.project_id = patch.project_id;
+      if (patch.completed_at !== undefined)
+        workspace.completed_at = patch.completed_at;
+      if (patch.completed_by !== undefined)
+        workspace.completed_by = patch.completed_by;
       workspace.updated_at = new Date();
       await workspace.save();
       // Only a manager reaches an update, and a manager sees every room.
@@ -498,6 +582,26 @@ export class WorkspaceRepository {
   public async findRoom(id: string) {
     try {
       return await Room.findByPk(id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // The ids of everyone ACTIVE in one room, in a single query.
+  //
+  // This is the assignable set for a room's shared task: POST /task validates
+  // every subtasks[].assigned_to against it, and the read rule in
+  // user.service checks a caller against it. Pending and rejected rows are
+  // excluded, so somebody waiting on approval can neither be given a subtask
+  // nor read the room's tasks.
+  public async activeRoomMemberIds(room_id: string): Promise<string[]> {
+    try {
+      const rows = await RoomMember.findAll({
+        where: { room_id, status: ACTIVE },
+        attributes: ["user_id"],
+        raw: true,
+      });
+      return rows.map((r: any) => r.user_id);
     } catch (error) {
       throw error;
     }
@@ -836,6 +940,183 @@ export class WorkspaceRepository {
       });
     } catch {
       // ignored on purpose
+    }
+  }
+
+  // ── Completion notices ────────────────────────────────────────────────────
+
+  // The people a completion notice may be sent to: every SP, AM and MG, with
+  // the caller's own manager flagged so the picker can pre-select them.
+  //
+  // Deliberately role-based rather than "everyone": the button would otherwise
+  // be a way to push a notification at an arbitrary colleague. The caller is
+  // excluded — nobody needs telling about a button they just pressed
+  // themselves.
+  public async notifiableManagers(
+    caller_id: string
+  ): Promise<NotifyTarget[]> {
+    try {
+      const [caller, rows] = await Promise.all([
+        User.findByPk(caller_id, { attributes: ["manager_id"], raw: true }),
+        User.findAll({
+          where: {
+            role: { [Op.in]: NOTIFIABLE_ROLES },
+            id: { [Op.ne]: caller_id },
+            isBlocked: false,
+          },
+          attributes: ["id", "fullName", "email", "role"],
+          order: [["fullName", "ASC"]],
+          raw: true,
+        }),
+      ]);
+      const myManager = (caller as any)?.manager_id ?? null;
+      return rows.map((u: any) => ({
+        id: u.id,
+        fullName: u.fullName ?? null,
+        email: u.email ?? null,
+        role: u.role,
+        is_my_manager: !!myManager && u.id === myManager,
+      }));
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // The workspace plus the project NAME, which the announce message needs:
+  // `"WebApps" (Effort Tracker) has been marked completed by Lakshman.`
+  //
+  // A plain findRaw would cost a second lookup for the project, and the message
+  // is rendered verbatim by the client — a missing project name would show up
+  // in the notification itself.
+  public async findRawWithProject(id: string) {
+    try {
+      return await Workspace.findByPk(id, {
+        include: [
+          {
+            model: Project,
+            as: "project",
+            attributes: ["id", "name"],
+            required: false,
+          },
+        ],
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Stamps the announce. Called only after the notification rows are written,
+  // so a failed announce never leaves the strip claiming somebody was told.
+  //
+  // Overwrites rather than only setting the first time: a reminder is a
+  // legitimate second announce, and the page wants the MOST RECENT one.
+  public async markAnnounced(workspace: Workspace, at: Date) {
+    try {
+      workspace.announced_at = at;
+      workspace.updated_at = new Date();
+      await workspace.save({ fields: ["announced_at", "updated_at"] });
+      return workspace;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // The ids in `wanted` that notify-targets would NOT have returned, in the
+  // order they were sent, each with the reason.
+  //
+  // Strict by design, unlike the partitioning read below: nothing has been
+  // written when this runs, so the whole request can be rejected with a 400
+  // naming the bad id. That is the useful answer — a bad id here means the
+  // picker is out of date, and saying which entry is stale is the point.
+  public async invalidNotifyTargets(
+    caller_id: string,
+    wanted: string[]
+  ): Promise<Array<{ index: number; id: string; reason: string }>> {
+    try {
+      const bad: Array<{ index: number; id: string; reason: string }> = [];
+      if (!wanted.length) return bad;
+
+      const found: any[] = await User.findAll({
+        where: { id: { [Op.in]: [...new Set(wanted)] } },
+        attributes: ["id", "role", "isBlocked"],
+        raw: true,
+      });
+      const byId = new Map(found.map((u: any) => [u.id, u]));
+
+      wanted.forEach((id, index) => {
+        const user = byId.get(id);
+        if (!user) bad.push({ index, id, reason: "not a known user" });
+        else if (id === caller_id)
+          bad.push({ index, id, reason: "you cannot notify yourself" });
+        else if (user.isBlocked)
+          bad.push({ index, id, reason: "account is blocked" });
+        else if (!NOTIFIABLE_ROLES.includes(user.role))
+          bad.push({ index, id, reason: `role ${user.role} is not a manager` });
+      });
+      return bad;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Partitions the requested recipient ids into those that are genuinely
+  // notifiable managers and those that are not, rather than rejecting the whole
+  // request on one bad id. A stale entry in the picker must not undo a
+  // completion that has already been written.
+  public async resolveNotifyTargets(
+    caller_id: string,
+    user_ids: string[]
+  ): Promise<{
+    valid: Array<{ id: string; fullName: string | null }>;
+    skipped: Array<{ id: string; reason: string }>;
+  }> {
+    try {
+      const wanted = [...new Set((user_ids ?? []).filter(Boolean))];
+      const valid: Array<{ id: string; fullName: string | null }> = [];
+      const skipped: Array<{ id: string; reason: string }> = [];
+      if (!wanted.length) return { valid, skipped };
+
+      const found: any[] = await User.findAll({
+        where: { id: { [Op.in]: wanted } },
+        attributes: ["id", "fullName", "role", "isBlocked"],
+        raw: true,
+      });
+      const byId = new Map(found.map((u: any) => [u.id, u]));
+
+      for (const id of wanted) {
+        const user = byId.get(id);
+        if (!user) {
+          skipped.push({ id, reason: "not a known user" });
+        } else if (id === caller_id) {
+          skipped.push({ id, reason: "you cannot notify yourself" });
+        } else if (user.isBlocked) {
+          skipped.push({ id, reason: "account is blocked" });
+        } else if (!NOTIFIABLE_ROLES.includes(user.role)) {
+          skipped.push({ id, reason: `role ${user.role} is not a manager` });
+        } else {
+          valid.push({ id, fullName: user.fullName ?? null });
+        }
+      }
+      return { valid, skipped };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Names for a set of ids. Mirrors UserRepository.findUsersLite; kept here so
+  // the workspace service does not have to reach into the task repository for
+  // one lookup.
+  public async usersLite(ids: string[]) {
+    try {
+      const unique = [...new Set((ids ?? []).filter(Boolean))];
+      if (!unique.length) return [];
+      return await User.findAll({
+        where: { id: { [Op.in]: unique } },
+        attributes: ["id", "fullName", "email"],
+        raw: true,
+      });
+    } catch (error) {
+      throw error;
     }
   }
 

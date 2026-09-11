@@ -2,7 +2,11 @@ import { TaskGroup } from "../connection/models/task_group";
 import { Op } from "sequelize";
 import { statusForGroup } from "./user.repository";
 import { Task } from "../connection/models/tasks";
+import { User } from "../connection/models/user";
+import { superAdminRepository } from "./super-admin.repository";
 import { TaskGroupInput, TaskGroupPatch } from "../types/task.types";
+
+const SuperAdminRepository = new superAdminRepository();
 
 export class TaskGroupRepository {
   // Ordered the way the board draws the lanes. Returns the shared lanes every
@@ -16,6 +20,30 @@ export class TaskGroupRepository {
           ["created_at", "ASC"],
         ],
       });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // The boards an AM may act on: their own team, plus the shared users they
+  // share a domain with. Deliberately the same set
+  // adminManagerRepository.listAllusers draws the manager's user list from, so
+  // every user an AM can pick in the UI is a user whose lanes they can manage —
+  // and nobody else's.
+  public async isBoardManagedBy(
+    manager_id: string,
+    user_id: string
+  ): Promise<boolean> {
+    try {
+      const user: any = await User.findByPk(user_id, {
+        attributes: ["id", "manager_id", "is_shared"],
+        raw: true,
+      });
+      if (!user) return false;
+      if (user.manager_id === manager_id) return true;
+      if (!user.is_shared) return false;
+      const peers = await SuperAdminRepository.getDomainPeerUserIds(manager_id);
+      return peers.includes(user_id);
     } catch (error) {
       throw error;
     }

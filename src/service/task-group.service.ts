@@ -17,16 +17,40 @@ const ORPHAN_FALLBACK_STATUS = "yet_to_start";
 
 const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
-const resolveBoardOwner = (
+// Which board a call acts on. `assigned_to` absent (or the caller themself) is
+// always the caller's own board; anything else is a cross-board call and has to
+// be earned:
+//
+//   SP  — every board.
+//   AM  — only the boards of the users they actually manage. An AM handed
+//         someone else's id gets a 403 rather than a lane written onto a board
+//         they have no business touching.
+//   rest — no cross-board access at all.
+const resolveBoardOwner = async (
   callerId: string,
   callerRole: string | undefined,
   assigned_to?: string
-): string => {
+): Promise<string> => {
   if (!assigned_to || assigned_to === callerId) return callerId;
   if (!callerRole || !CROSS_BOARD_ROLES.includes(callerRole)) {
     throw new Error("Not authorized to view this board's groups");
   }
+  if (
+    callerRole === Role.Admin &&
+    !(await taskGroupRepository.isBoardManagedBy(callerId, assigned_to))
+  ) {
+    throw new Error("Not authorized to manage this user's groups");
+  }
   return assigned_to;
+};
+
+// A shared lane is drawn on every board, so renaming or deleting one is not a
+// change to the board it was opened from — it hits everybody. Managing someone
+// else's board does not carry that, so keep it with SP.
+const assertMutable = (group: { is_shared: boolean }, callerRole?: string) => {
+  if (group.is_shared && callerRole !== Role.SuperAdmin) {
+    throw new Error("Not authorized to change a shared group");
+  }
 };
 
 const validateName = (name: unknown): string => {
@@ -63,7 +87,7 @@ export class TaskGroupService {
     assigned_to?: string
   ) {
     try {
-      const owner = resolveBoardOwner(callerId, callerRole, assigned_to);
+      const owner = await resolveBoardOwner(callerId, callerRole, assigned_to);
       return await taskGroupRepository.listByUser(owner);
     } catch (error) {
       throw error;
@@ -76,7 +100,11 @@ export class TaskGroupService {
     data: { name?: unknown; color?: unknown; position?: unknown; assigned_to?: string }
   ) {
     try {
-      const owner = resolveBoardOwner(callerId, callerRole, data.assigned_to);
+      const owner = await resolveBoardOwner(
+        callerId,
+        callerRole,
+        data.assigned_to
+      );
       const name = validateName(data.name);
       // New groups are always private to their owner. Reject a name that
       // already exists as a shared lane, or the board draws two lanes with the
@@ -111,7 +139,11 @@ export class TaskGroupService {
       if (!id) throw new Error("Group id is required");
       const group = await taskGroupRepository.findById(id);
       if (!group) throw new Error("Group not found");
-      resolveBoardOwner(callerId, callerRole, group.user_id);
+      // Authorized on the group's OWNER, not on the caller: a manager renaming
+      // a lane on a board they manage is the whole point of the cross-board
+      // param, and that lane's user_id is never their own id.
+      await resolveBoardOwner(callerId, callerRole, group.user_id);
+      assertMutable(group, callerRole);
 
       const patch: TaskGroupPatch = {};
       if (body.name !== undefined) {
@@ -157,7 +189,8 @@ export class TaskGroupService {
       if (!id) throw new Error("Group id is required");
       const group = await taskGroupRepository.findById(id);
       if (!group) throw new Error("Group not found");
-      resolveBoardOwner(callerId, callerRole, group.user_id);
+      await resolveBoardOwner(callerId, callerRole, group.user_id);
+      assertMutable(group, callerRole);
 
       // ON DELETE SET NULL clears group_id, but since 009 the group's NAME also
       // lives in tasks.status — left alone it matches no group lane (no group)

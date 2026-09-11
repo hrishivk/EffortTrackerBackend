@@ -10,6 +10,7 @@ import { Project } from "../connection/models/project";
 import { Domain } from "../connection/models/domain";
 import { ProjectMember } from "../connection/models/project_member";
 import { TaskGroup } from "../connection/models/task_group";
+import { Transaction } from "sequelize";
 
 const CredentialHashing = new credentialHashing();
 
@@ -91,6 +92,25 @@ export const normalizeTags = (input?: unknown): string[] => {
 
 export const MAX_SESSION_SECONDS = 8 * 60 * 60;
 
+// The four real statuses, as opposed to a group name sitting in status since
+// 009. Mirrors the set in user.service; kept here too so the parent roll-up
+// does not have to reach up into the service layer.
+const REAL_STATUS_SET = new Set([
+  "yet_to_start",
+  "in_progress",
+  "completed",
+  "blocked",
+]);
+
+// Only the three ordered states. `blocked` is deliberately absent: it is a real
+// status but not a step on the path, so the roll-up neither moves a parent to
+// it nor treats it as progress.
+const STATUS_RANK_ORDER: Record<string, number> = {
+  yet_to_start: 0,
+  in_progress: 1,
+  completed: 2,
+};
+
 // A session is running if the clock is set and no stop came AFTER it. Checking
 // only "end_time is null" is wrong: a task that was stopped and then resumed
 // keeps the older end_time, so start_time > end_time also means running.
@@ -134,6 +154,55 @@ export const normalizeTaskStatus = (
     );
   return cleaned.length ? Array.from(new Set(cleaned)) : undefined;
 };
+// The nested children of a board card, and the shape §3 of the room
+// shared-tasks contract asks for. Extracted because three reads embed it
+// (todayTask, tasksByProject and findTaskWithSubtasks) and they drifted apart
+// once already.
+//
+// dailyLog -> assignedUser is how a subtask carries WHOSE subtask it is:
+// assignment is not a column on tasks, it lives on the child's own daily log,
+// which is what lets one parent's children sit in three different people's
+// logs. taskView.decorateTask lifts it to a flat `assigned_to` /
+// `assignedUser` pair on the subtask so the row renders without the client
+// walking into dailyLog.
+//
+// separate: true — a hasMany with its own ORDER BY cannot be ordered inside a
+// LIMITed parent query, and the parent query is paginated.
+// Returns `any` because Sequelize's Includeable type cannot express an ORDER
+// on a `separate` hasMany without every tuple being widened by hand.
+export const subtaskInclude = (): any => ({
+  model: Task,
+  as: "subtasks",
+  required: false,
+  separate: true,
+  include: [
+    {
+      model: TaskGroup,
+      as: "group",
+      attributes: ["id", "name", "color", "position"],
+    },
+    {
+      model: DailyTaskLog,
+      as: "dailyLog",
+      attributes: ["id", "created_by", "assigned_to"],
+      include: [
+        {
+          model: User,
+          as: "assignedUser",
+          attributes: ["id", "fullName", "email"],
+        },
+      ],
+    },
+  ],
+  // position first, created_at as the tie-break so children created before
+  // 018 (all on position 0 until its backfill runs) keep the order the board
+  // has always drawn them in.
+  order: [
+    ["position", "ASC"],
+    ["created_at", "ASC"],
+  ],
+});
+
 export class UserRepository {
   async findUserByEmail(email: string) {
     try {
@@ -185,14 +254,126 @@ export class UserRepository {
     try {
       return await Task.findByPk(id, {
         include: [
+          subtaskInclude(),
           {
-            model: Task,
-            as: "subtasks",
-            separate: true,
-            order: [["created_at", "ASC"]],
+            model: DailyTaskLog,
+            as: "dailyLog",
+            attributes: ["id", "created_by", "assigned_to"],
+            include: [
+              {
+                model: User,
+                as: "assignedUser",
+                attributes: ["id", "fullName", "email"],
+              },
+            ],
           },
         ],
       });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Bare row, no includes. Used where only the row's own columns matter -
+  // `sequential` on a parent, `position` on a child.
+  async findTaskRaw(id: string, transaction?: Transaction) {
+    try {
+      return await Task.findByPk(id, { transaction });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // The children of one parent, in the order the sequential rule reads them.
+  // Takes the transaction so the §4 order check and the parent roll-up both
+  // see the same snapshot as the child update they are wrapped around.
+  async findChildren(parent_id: string, transaction?: Transaction) {
+    try {
+      return await Task.findAll({
+        where: { parent_id },
+        order: [
+          ["position", "ASC"],
+          ["created_at", "ASC"],
+        ],
+        include: [
+          {
+            model: DailyTaskLog,
+            as: "dailyLog",
+            attributes: ["id", "created_by", "assigned_to"],
+            include: [
+              {
+                model: User,
+                as: "assignedUser",
+                attributes: ["id", "fullName", "email"],
+              },
+            ],
+          },
+        ],
+        transaction,
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // §3, the rule that makes the feature visible: a caller gets a parent when
+  // they are the assignee of ANY of its subtasks.
+  //
+  // Resolved through daily logs because that is where assignment lives — these
+  // are the log ids the caller can see, so any CHILD sitting in one of them is
+  // a child of theirs, and its parent_id is a parent they are entitled to.
+  // Returns only parent ids; the caller unions them into its own where clause
+  // so the parent still comes back whole, with ALL of its subtasks.
+  async parentIdsForChildLogs(logIds: string[]): Promise<string[]> {
+    try {
+      if (!logIds.length) return [];
+      const rows = await Task.findAll({
+        where: {
+          daily_log_id: { [Op.in]: logIds },
+          parent_id: { [Op.ne]: null },
+        },
+        attributes: ["parent_id"],
+        group: ["parent_id"],
+        raw: true,
+      });
+      return rows
+        .map((r: any) => r.parent_id)
+        .filter((v: string | null): v is string => !!v);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Names and emails for a set of user ids, in one query. Used to resolve
+  // comment authors for a whole /task-list page at once rather than per
+  // comment, and to turn an @-mention into a real user before a notification
+  // is raised for it.
+  async findUsersLite(ids: string[]) {
+    try {
+      const unique = [...new Set((ids ?? []).filter(Boolean))];
+      if (!unique.length) return [];
+      return await User.findAll({
+        where: { id: { [Op.in]: unique } },
+        attributes: ["id", "fullName", "email"],
+        raw: true,
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Every daily log for one date, whatever its owner. Used only to keep the
+  // room-wide read rule inside the day the board is asking for: without it,
+  // "readable by every member of the room" would drag a room's whole history
+  // onto today's board. Bounded by one row per person per day.
+  async logIdsForDate(date: string): Promise<string[]> {
+    try {
+      const rows = await DailyTaskLog.findAll({
+        where: { date: date.split("T")[0] },
+        attributes: ["id"],
+        raw: true,
+      });
+      return rows.map((r: any) => r.id);
     } catch (error) {
       throw error;
     }
@@ -305,7 +486,7 @@ export class UserRepository {
   }
   public async createNewTask(data: AddTask): Promise<Task> {
     try {
-      const { dailyTaskLog, project_id, description, priority, end_time, start_time, start_date, due_date, group_id, room_id, parent_id, tags, status } = data;
+      const { dailyTaskLog, project_id, description, priority, end_time, start_time, start_date, due_date, group_id, room_id, parent_id, tags, status, position, sequential } = data;
       const taskData: any = {
         daily_log_id: dailyTaskLog.id,
         project_id: project_id,
@@ -330,6 +511,21 @@ export class UserRepository {
       if (group_id) taskData.group_id = group_id;
       if (room_id) taskData.room_id = room_id;
       if (parent_id) taskData.parent_id = parent_id;
+      // Only meaningful on a child. Written unconditionally so a caller can
+      // send 0 deliberately — `if (position)` would drop it.
+      if (position !== undefined && position !== null) {
+        taskData.position = position;
+      }
+      // Set on the PARENT. Coerced rather than passed through: this arrives
+      // straight off req.body, so a form that sends the string "true" or a 1
+      // must not reach a boolean column as text.
+      const rawSequential: unknown = sequential;
+      if (rawSequential !== undefined && rawSequential !== null) {
+        taskData.sequential =
+          rawSequential === true ||
+          rawSequential === "true" ||
+          rawSequential === 1;
+      }
       taskData.tags = normalizeTags(tags);
       if (status) taskData.status = status;
       return await Task.create(taskData);
@@ -357,7 +553,14 @@ export class UserRepository {
         task.total_time = formatDuration(task.total_seconds);
         task.end_time = new Date(started + banked * 1000);
         task.updated_at = new Date();
-        await task.save();
+        // Explicit field list. Without it save() writes every attribute
+        // Sequelize believes is dirty, and `comments` is a JSONB column loaded
+        // into this instance — a save that carried it would push a snapshot
+        // taken before someone else's comment landed, silently deleting it.
+        // Comments are only ever written by TaskCommentRepository, in SQL.
+        await task.save({
+          fields: ["total_seconds", "total_time", "end_time", "updated_at"],
+        });
         closed++;
       }
       return closed;
@@ -511,13 +714,50 @@ export class UserRepository {
     }
   }
 
-  public async todayTask(ids: string[] | string, projectId?: string, offset?: number, limit?: number, status?: string | string[]): Promise<{ tasks: Task[]; totalCount: number }> {
+  // `scope` widens WHICH parents come back, and nothing else — the row that
+  // comes back is still the whole parent with all of its subtasks nested, so a
+  // member who is only on subtask 3 still sees who is ahead of them and
+  // whether that person has finished (§3).
+  //
+  //   parentIds  parents whose CHILD sits in one of the caller's daily logs
+  //   roomIds    rooms the caller is an active member of
+  //   roomLogIds the daily logs of the date being asked for, which bounds the
+  //              room rule to this day's board instead of the room's history
+  public async todayTask(
+    ids: string[] | string,
+    projectId?: string,
+    offset?: number,
+    limit?: number,
+    status?: string | string[],
+    scope?: { parentIds?: string[]; roomIds?: string[]; roomLogIds?: string[] }
+  ): Promise<{ tasks: Task[]; totalCount: number }> {
     try {
       const idArray = Array.isArray(ids) ? ids : [ids];
+
+      // Rule 1 and 3 of §3 together: the caller's own daily logs already cover
+      // "assigned to me" and "created by me", because findDailyLogs selects on
+      // assigned_to OR created_by.
+      const visibility: any[] = [{ daily_log_id: { [Op.in]: idArray } }];
+
+      // Rule 2: assignee of any of its subtasks.
+      if (scope?.parentIds?.length) {
+        visibility.push({ id: { [Op.in]: scope.parentIds } });
+      }
+
+      // The authorization decision of §3, taken as suggested: a task with a
+      // room_id is readable by every ACTIVE member of that room; a task
+      // without one keeps the stricter daily-log rule above. Date-bounded, so
+      // opening today's board does not pull in every task the room has ever
+      // had.
+      if (scope?.roomIds?.length && scope?.roomLogIds?.length) {
+        visibility.push({
+          room_id: { [Op.in]: scope.roomIds },
+          daily_log_id: { [Op.in]: scope.roomLogIds },
+        });
+      }
+
       const whereClause: any = {
-        daily_log_id: {
-          [Op.in]: idArray,
-        },
+        [Op.or]: visibility,
         // Subtasks come back nested under their parent, never as their own row.
         parent_id: null,
       };
@@ -545,22 +785,9 @@ export class UserRepository {
             as: "group",
             attributes: ["id", "name", "color", "position"],
           },
-          {
-            // Nested rather than listed alongside: a subtask is not its own
-            // board card.
-            model: Task,
-            as: "subtasks",
-            required: false,
-            separate: true,
-            include: [
-              {
-                model: TaskGroup,
-                as: "group",
-                attributes: ["id", "name", "color", "position"],
-              },
-            ],
-            order: [["created_at", "ASC"]],
-          },
+          // Nested rather than listed alongside: a subtask is not its own
+          // board card.
+          subtaskInclude(),
           {
             model: DailyTaskLog,
             as: "dailyLog",
@@ -615,22 +842,9 @@ export class UserRepository {
             as: "group",
             attributes: ["id", "name", "color", "position"],
           },
-          {
-            // Nested rather than listed alongside: a subtask is not its own
-            // board card.
-            model: Task,
-            as: "subtasks",
-            required: false,
-            separate: true,
-            include: [
-              {
-                model: TaskGroup,
-                as: "group",
-                attributes: ["id", "name", "color", "position"],
-              },
-            ],
-            order: [["created_at", "ASC"]],
-          },
+          // Nested rather than listed alongside: a subtask is not its own
+          // board card.
+          subtaskInclude(),
           {
             model: DailyTaskLog,
             as: "dailyLog",
@@ -668,7 +882,8 @@ export class UserRepository {
   // group_id: null to unlink, a group drop sends no status at all.
   public async updateTaskLane(
     task: Task,
-    changes: { status?: string; group_id?: string | null }
+    changes: { status?: string; group_id?: string | null },
+    transaction?: Transaction
   ): Promise<Task> {
     try {
       if (changes.status === undefined && changes.group_id === undefined) {
@@ -721,10 +936,105 @@ export class UserRepository {
       }
 
       task.updated_at = now;
-      await task.save();
+      // Explicit field list, same reason as closeOpenSessions: `comments` is a
+      // JSONB column that this instance is holding a possibly-stale copy of,
+      // and a bare save() would write it back and lose comments that landed in
+      // between. Everything this method touches is listed.
+      await task.save({
+        fields: [
+          "status",
+          "group_id",
+          "start_time",
+          "end_time",
+          "total_seconds",
+          "total_time",
+          "updated_at",
+        ],
+        transaction,
+      });
       return task;
     } catch (error) {
       console.error("Error updating task lane:", error);
+      throw error;
+    }
+  }
+
+  // §4(b): the parent's status is derived from its children, on the SERVER.
+  //
+  // The frontend used to do this — first child to start set the parent
+  // in_progress, last to finish set it completed. With three people acting from
+  // three browsers that races and the parent ends up wrong, so it now happens
+  // here, inside the same transaction as the child's own update.
+  //
+  // Derivation:
+  //   every child completed          -> completed
+  //   any child started or finished  -> in_progress
+  //   otherwise (all yet_to_start)   -> left alone
+  //
+  // FORWARD ONLY. A parent never moves back: `blocked` on a child does not
+  // reopen a completed parent, and a parent parked in a custom group lane
+  // ("Production") is left entirely alone — since 009 status IS the lane name,
+  // so writing a status over it would silently pull the card out of its lane.
+  //
+  // Returns the parent when it changed, and the unchanged parent otherwise, so
+  // the caller can hand it straight back to the client either way. Null only
+  // when the parent has vanished.
+  public async rollUpParentStatus(
+    parent_id: string,
+    transaction?: Transaction
+  ): Promise<Task | null> {
+    try {
+      const parent = await Task.findByPk(parent_id, { transaction });
+      if (!parent) return null;
+
+      // A locked day is frozen, and the parent now lives in a DIFFERENT daily
+      // log from its children — each child sits in its assignee's log. So the
+      // parent's log can be locked while a child's is not, and the roll-up
+      // would be the one write that slipped past the lock. Returned unchanged
+      // rather than thrown: the child's own transition is legitimate and must
+      // still succeed.
+      if (parent.isLocked) return parent;
+
+      const current = String(parent.status ?? "").toLowerCase().trim();
+      // A group lane is not a status; leave it.
+      if (!REAL_STATUS_SET.has(current)) return parent;
+      // Nothing rolls a completed parent back open.
+      if (current === "completed") return parent;
+
+      const children = await Task.findAll({
+        where: { parent_id },
+        attributes: ["id", "status"],
+        transaction,
+        raw: true,
+      });
+      if (!children.length) return parent;
+
+      const statuses = children.map((c: any) =>
+        String(c.status ?? "").toLowerCase().trim()
+      );
+      const allCompleted = statuses.every((st) => st === "completed");
+      const anyStarted = statuses.some(
+        (st) => st === "in_progress" || st === "completed"
+      );
+
+      const target = allCompleted
+        ? "completed"
+        : anyStarted
+        ? "in_progress"
+        : undefined;
+      if (!target || target === current) return parent;
+
+      // Only ever forward along yet_to_start -> in_progress -> completed.
+      const from = STATUS_RANK_ORDER[current];
+      const to = STATUS_RANK_ORDER[target];
+      if (from === undefined || to === undefined || to <= from) return parent;
+
+      // Through updateTaskLane so the parent's own clock is handled the same
+      // way a manual transition handles it: its timer starts when the first
+      // child starts and banks when the last child finishes.
+      return await this.updateTaskLane(parent, { status: target }, transaction);
+    } catch (error) {
+      console.error("Error rolling up parent status:", error);
       throw error;
     }
   }
