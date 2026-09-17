@@ -11,6 +11,7 @@ import { Domain } from "../connection/models/domain";
 import { ProjectMember } from "../connection/models/project_member";
 import { TaskGroup } from "../connection/models/task_group";
 import { Transaction } from "sequelize";
+import { DateRange } from "../utils/dateRange";
 
 const CredentialHashing = new credentialHashing();
 
@@ -88,6 +89,27 @@ export const normalizeTags = (input?: unknown): string[] => {
     if (out.length >= MAX_TAGS) break;
   }
   return out;
+};
+
+// The `date` predicate for a daily-log query, built from either a single day
+// or an inclusive {from, to} window (§0).
+//
+// A single day stays an equality test so the existing index use does not
+// change, and keeps the split("T") callers have always relied on to pass a
+// full ISO string. A range becomes an inclusive BETWEEN over two date-only
+// strings — daily_task_logs.date is DATEONLY, so comparing it against
+// YYYY-MM-DD carries no timezone and the window cannot drift by a day.
+//
+// undefined means NO date predicate: every log, whenever it was written. That
+// is what the board gets when it sends neither a date nor a range, which is
+// exactly what it does today.
+const dailyLogDateWhere = (window?: string | DateRange): any => {
+  if (window === undefined || window === null) return undefined;
+  if (typeof window === "string") {
+    const trimmed = window.trim();
+    return trimmed ? trimmed.split("T")[0] : undefined;
+  }
+  return { [Op.between]: [window.from, window.to] };
 };
 
 export const MAX_SESSION_SECONDS = 8 * 60 * 60;
@@ -362,14 +384,21 @@ export class UserRepository {
     }
   }
 
-  // Every daily log for one date, whatever its owner. Used only to keep the
-  // room-wide read rule inside the day the board is asking for: without it,
-  // "readable by every member of the room" would drag a room's whole history
-  // onto today's board. Bounded by one row per person per day.
-  async logIdsForDate(date: string): Promise<string[]> {
+  // Every daily log inside a window, whatever its owner. Used only to keep
+  // the room-wide read rule inside the days the board is asking for: without
+  // it, "readable by every member of the room" would drag a room's whole
+  // history onto the board. Bounded by one row per person per day, so a range
+  // costs (people x days) ids rather than the room's lifetime.
+  //
+  // An absent window returns nothing rather than everything, on purpose. The
+  // room rule is the widest read in the app, and unbounded it is no rule at
+  // all — the caller keeps its own daily logs either way.
+  async logIdsForWindow(window?: string | DateRange): Promise<string[]> {
     try {
+      const dateWhere = dailyLogDateWhere(window);
+      if (dateWhere === undefined) return [];
       const rows = await DailyTaskLog.findAll({
-        where: { date: date.split("T")[0] },
+        where: { date: dateWhere },
         attributes: ["id"],
         raw: true,
       });
@@ -569,23 +598,34 @@ export class UserRepository {
     }
   }
 
-  public async findDailyLogs(date: string, id: string, role?: string, assigned_to?: string) {
+  // `window` is one date-only string (the board asking for a single day), an
+  // inclusive {from, to} range (§0), or nothing at all (every log, which is
+  // what the board falls back to today by omitting the date entirely).
+  public async findDailyLogs(
+    window: string | DateRange | undefined,
+    id: string,
+    role?: string,
+    assigned_to?: string
+  ) {
     try {
-      const formattedDate = date.split("T")[0];
+      const dateWhere = dailyLogDateWhere(window);
+      // Spread rather than assigned, so an absent window leaves the key off
+      // the where clause entirely instead of matching `date: undefined`.
+      const inWindow = dateWhere === undefined ? {} : { date: dateWhere };
       if (role == "SP") {
         // If assigned_to filter is provided, show that specific user's tasks
         if (assigned_to) {
           return await DailyTaskLog.findAll({
             where: {
               assigned_to: assigned_to,
-              date: formattedDate,
+              ...inWindow,
             },
           });
         }
         // SP sees all tasks
         return await DailyTaskLog.findAll({
           where: {
-            date: formattedDate,
+            ...inWindow,
           },
         });
       } else if (role == "AM") {
@@ -594,7 +634,7 @@ export class UserRepository {
           return await DailyTaskLog.findAll({
             where: {
               assigned_to: assigned_to,
-              date: formattedDate,
+              ...inWindow,
             },
           });
         }
@@ -612,7 +652,7 @@ export class UserRepository {
               { assigned_to: id },
               ...(managedUserIds.length > 0 ? [{ assigned_to: { [Op.in]: managedUserIds } }] : []),
             ],
-            date: formattedDate,
+            ...inWindow,
           },
         });
       } else {
@@ -623,7 +663,7 @@ export class UserRepository {
               { assigned_to: id },
               { created_by: id },
             ],
-            date: formattedDate,
+            ...inWindow,
           },
         });
       }
@@ -819,10 +859,24 @@ export class UserRepository {
       throw error;
     }
   }
-  public async tasksByProject(projectId: string, offset?: number, limit?: number, status?: string | string[]): Promise<{ tasks: Task[]; totalCount: number }> {
+  // The project board: every top-level task of one project, optionally bounded
+  // to a window (§0). Without `window` this returns the project's whole
+  // history — which is what the reports page is living on today, and why it
+  // has to slice the result in the browser.
+  public async tasksByProject(
+    projectId: string,
+    offset?: number,
+    limit?: number,
+    status?: string | string[],
+    window?: string | DateRange
+  ): Promise<{ tasks: Task[]; totalCount: number }> {
     try {
       const statuses = parseStatusFilter(status);
       const whereClause: any = { project_id: projectId, parent_id: null };
+      // The date lives on the daily log, not on the task, so bounding by a
+      // window turns the dailyLog include into an INNER JOIN. A task with no
+      // daily log has no date and so cannot be placed in a window at all.
+      const dateWhere = dailyLogDateWhere(window);
       if (statuses) {
         whereClause[Op.and] = [
           Sequelize.where(STATUS_SLUG, { [Op.in]: statuses }),
@@ -849,6 +903,9 @@ export class UserRepository {
             model: DailyTaskLog,
             as: "dailyLog",
             attributes: ["id", "created_by", "assigned_to", "date"],
+            ...(dateWhere === undefined
+              ? {}
+              : { required: true, where: { date: dateWhere } }),
             include: [
               {
                 model: User,

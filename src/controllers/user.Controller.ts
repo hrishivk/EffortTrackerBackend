@@ -12,6 +12,12 @@ import {
 } from "../service/task-comment.service";
 import { NotificationRepository } from "../repositories/notification.repository";
 import { AttendanceRepository } from "../repositories/attendance.repository";
+import {
+  DateRange,
+  DateRangeError,
+  parseDateRange,
+  parseOptionalDateOnly,
+} from "../utils/dateRange";
 const UserService = new userService();
 const SuperAdminService = new superAdminService();
 const leaveService = new LeaveService();
@@ -20,8 +26,6 @@ const taskCommentService = new TaskCommentService();
 const notificationRepo = new NotificationRepository();
 const attendanceRepo = new AttendanceRepository();
 
-// Deliberately not HTTP_statusCode.TaskFailed (304): a 304 carries no body, so
-// the message would never reach the caller's snackbar.
 const taskGroupErrorCode = (message?: string): HTTP_statusCode => {
   if (!message) return HTTP_statusCode.InternalServerError;
   if (message === "Group not found") return HTTP_statusCode.NotFound;
@@ -36,14 +40,14 @@ const taskGroupErrorCode = (message?: string): HTTP_statusCode => {
     message.startsWith("Group id") ||
     message.startsWith("Color must") ||
     message.startsWith("Position must") ||
-    message.startsWith("Nothing to update")
+    message.startsWith("Nothing to update") ||
+    message.startsWith("assigned_to")
   )
     return HTTP_statusCode.BadRequest;
   return HTTP_statusCode.InternalServerError;
 };
 
-// Same shape as taskGroupErrorCode above, and 304 is avoided here for the same
-// reason: it carries no body, so the message would never reach the caller.
+
 const taskCommentErrorCode = (message?: string): HTTP_statusCode => {
   if (!message) return HTTP_statusCode.InternalServerError;
   if (
@@ -85,12 +89,7 @@ export class userController {
         tags,
         subtasks,
         parent_id,
-        // Sent by the room page alongside project_id, assigned_to, priority,
-        // status and group_id. Omitted everywhere else, so it stays null.
         room_id,
-        // The room's shared task: when true its subtasks run strictly in
-        // position order. Omitted everywhere else, so it stays false and no
-        // existing caller changes behaviour.
         sequential,
       });
       sendResponse(res, HTTP_statusCode.CREATED, {
@@ -101,10 +100,6 @@ export class userController {
     } catch (error: any) {
       const isLocked =
         error.message === "Daily log is locked. Cannot add new task.";
-      // A rejected subtask assignee has to arrive as a 400 with the message
-      // intact. TaskFailed is 304, and a 304 carries no body, so the index of
-      // the offending row would never reach the caller — which is the entire
-      // reason the check names one.
       const isBadRequest =
         error.name === "SubtaskValidationError" ||
         error.message === "Room not found" ||
@@ -123,11 +118,31 @@ export class userController {
   }
   public async taskList(req: Request, res: Response) {
     try {
-      const { date, assigned_to, project, status, page = "1", limit = "10" } = req.query;
+      const { date, from, to, assigned_to, project, status, page = "1", limit = "10" } = req.query;
       const id = req.user?.id;
       const role = req.user?.role;
+
+      let range: DateRange | undefined;
+      let day: string | undefined;
+      try {
+        if (from !== undefined || to !== undefined) {
+          range = parseDateRange(from, to);
+        } else {
+          day = parseOptionalDateOnly(date, "date");
+        }
+      } catch (error: unknown) {
+        if (error instanceof DateRangeError) {
+          sendResponse(res, HTTP_statusCode.BadRequest, {
+            success: false,
+            message: error.message,
+          });
+          return;
+        }
+        throw error;
+      }
+
       const result = await UserService.listTask({
-        date, id, role, assigned_to, project, status,
+        date: day, range, id, role, assigned_to, project, status,
         page: parseInt(page as string),
         limit: parseInt(limit as string),
       });
@@ -164,12 +179,6 @@ export class userController {
         });
         return;
       }
-
-      // Read with `in` rather than a plain lookup so the drop payloads stay
-      // distinguishable:
-      //   drop on a status lane -> { status, group_id: null }  (unlinks group)
-      //   drop on a group       -> { group_id }                (status untouched)
-      // An absent key means "leave unchanged"; an explicit null means "clear".
       const body = req.body ?? {};
       const payload: TaskStatusUpdate = { id };
       if ("status" in body) payload.status = body.status;
@@ -201,11 +210,6 @@ export class userController {
         "Nothing to update: send status, group_id or both":
           HTTP_statusCode.BadRequest,
       };
-
-      // Section 4(a): starting a subtask out of turn on a sequential parent.
-      // Matched on the error's name, not its message — the message is written
-      // to be shown to the user as-is ("Build the UI can't start until Design
-      // the screens is completed") and has to stay free to change.
       const statusCode =
         error.name === "SequentialBlockedError"
           ? HTTP_statusCode.Conflict
@@ -220,12 +224,7 @@ export class userController {
       });
     }
   }
-  // ── Task comments ─────────────────────────────────────────────────────────
-  //
-  // Three writes and no GET: comments travel inside /task-list. The writes are
-  // server-side rather than letting the client PATCH the comments array
-  // because a whole-array write from a browser both loses comments that landed
-  // concurrently and lets anyone rewrite someone else's.
+
   public async addTaskComment(req: Request, res: Response) {
     try {
       const user_id = req.user?.id;
@@ -282,8 +281,6 @@ export class userController {
     try {
       const user_id = req.user?.id;
       if (!user_id) throw new Error("User not authenticated");
-      // Query params, not a body: DELETE with a body is refused or dropped by
-      // enough proxies that it is not worth relying on.
       const task_id = req.query.task_id as string;
       const comment_id = req.query.comment_id as string;
 
@@ -344,14 +341,6 @@ export class userController {
       });
     }
   }
-
-  // ── Board Groups ──
-  //
-  // A group is a user-created lane on the board, scoped per user. A caller sees
-  // their own groups; SP/AM can pass ?assigned_to=<userId> to get the groups of
-  // a board they are allowed to view. That keeps the group list aligned with the
-  // group_id values /task-list returns for that same board.
-
   public async listTaskGroups(req: Request, res: Response) {
     try {
       const callerId = req.user?.id as string;
@@ -373,7 +362,27 @@ export class userController {
       });
     }
   }
-
+  public async listAllTaskGroups(req: Request, res: Response) {
+    try {
+      const callerId = req.user?.id as string;
+      const assigned_to = req.query.assigned_to as string | undefined;
+      const data = await taskGroupService.listAllGroups(
+        callerId,
+        req.user?.role,
+        assigned_to
+      );
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "Task groups fetched successfully",
+        data,
+      });
+    } catch (error: any) {
+      sendResponse(res, taskGroupErrorCode(error.message), {
+        success: false,
+        message: error.message || "Failed to fetch task groups",
+      });
+    }
+  }
   public async createTaskGroup(req: Request, res: Response) {
     try {
       const callerId = req.user?.id as string;
@@ -402,8 +411,6 @@ export class userController {
       const callerId = req.user?.id as string;
       const id = req.query.id as string;
       const body = req.body ?? {};
-      // Only forward keys the client actually sent, so a rename does not blank
-      // out the group's color or reset its position.
       const patch: { name?: unknown; color?: unknown; position?: unknown } = {};
       if ("name" in body) patch.name = body.name;
       if ("color" in body) patch.color = body.color;
@@ -449,8 +456,6 @@ export class userController {
       });
     }
   }
-
-  // ── Leave Management ──
 
   public async applyLeave(req: Request, res: Response) {
     try {
@@ -658,7 +663,6 @@ export class userController {
     }
   }
 
-  // ── Notifications ──
 
   public async getNotifications(req: Request, res: Response) {
     try {
@@ -741,8 +745,6 @@ export class userController {
       });
     }
   }
-
-  // ── Attendance ──
 
   public async recordAttendance(req: Request, res: Response) {
     try {

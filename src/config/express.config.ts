@@ -3,7 +3,7 @@ import cors from "cors";
 import morgan from "morgan";
 import path from "path";
 import cookieParser from "cookie-parser";
-import { envConfig } from "./env.config";
+  
 
 export function configureExpress(app: Application): void {
   app.use(

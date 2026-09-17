@@ -15,6 +15,7 @@ import { TaskStatusUpdate, TaskWithDailyLog } from "../types/task.types";
 import { Task } from "../connection/models/tasks";
 import { DailyTaskLog } from "../connection/models/daily_task_logs";
 import { Project } from "../connection/models/project";
+import { DateRange } from "../utils/dateRange";
 import { Database } from "../connection/db/dbConnection";
 import { Transaction } from "sequelize";
 import { TaskNotificationService } from "./task-notification.service";
@@ -560,8 +561,14 @@ export class userService {
   // utils/taskView. The shape is a superset of what it used to return.
   public async listTask(data: any): Promise<{ data: any[]; totalPages: number }> {
     try {
-      const { date, id, role, assigned_to, project, status, page = 1, limit = 10 } = data;
+      const { date, range, id, role, assigned_to, project, status, page = 1, limit = 10 } = data;
       const skip = (page - 1) * limit;
+
+      // §0. Downstream, one date and an inclusive {from, to} window are the
+      // same thing: a predicate on daily_task_logs.date. `range` wins when a
+      // caller sends both, and neither means "no date predicate" — the
+      // unbounded read the board falls back to today.
+      const window: string | DateRange | undefined = range ?? date;
 
       let projectId: string | undefined;
       if (project) {
@@ -570,15 +577,20 @@ export class userService {
       }
 
 
+      // The project view: every top-level task of the project, not just the
+      // caller's. Selected on `date` alone rather than on `window`, so adding
+      // from/to to a project request BOUNDS the view it already had instead of
+      // quietly narrowing it to the caller's own tasks — the numbers on the
+      // reports page would move for a reason nobody asked for.
       if (!date && projectId) {
-        const { tasks, totalCount } = await userRepository.tasksByProject(projectId, skip, limit, status);
+        const { tasks, totalCount } = await userRepository.tasksByProject(projectId, skip, limit, status, range);
         return {
           data: decorateTasks(tasks, await commentAuthorsFor(tasks)),
           totalPages: Math.ceil(totalCount / limit),
         };
       }
 
-      const todayLog = await userRepository.findDailyLogs(date, id, role, assigned_to as string);
+      const todayLog = await userRepository.findDailyLogs(window, id, role, assigned_to as string);
       const logIds = (todayLog ?? []).map((log: any) => log.id);
 
       // Section 3 — who gets the task. The old rule was "the daily logs you
@@ -601,12 +613,12 @@ export class userService {
       // keeps the stricter daily-log rule. SP is skipped because findDailyLogs
       // already hands them every log for the date.
       //
-      // roomLogIds bounds it to the day being asked for. Without that bound,
-      // opening today's board would drag in every task the room has ever had.
+      // roomLogIds bounds it to the days being asked for. Without that bound,
+      // opening the board would drag in every task the room has ever had.
       const roomIds =
         role === "SP" ? [] : await workspaceRepository.roomIdsForUser(id);
       const roomLogIds =
-        roomIds.length && date ? await userRepository.logIdsForDate(date) : [];
+        roomIds.length && window ? await userRepository.logIdsForWindow(window) : [];
 
       // Nothing to look in and no room to look through: the caller genuinely
       // has no board for this date. Checked after the widenings rather than

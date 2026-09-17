@@ -25,6 +25,31 @@ export class TaskGroupRepository {
     }
   }
 
+
+  // Every lane visible on a SET of boards, in one query. The batch twin of
+  // listByUser: same predicate, same order, N boards instead of one.
+  //
+  // A shared lane comes back once however many boards are asked for — it is a
+  // single row that every board draws, not a row per board.
+  public async listForBoards(userIds: string[]) {
+    try {
+      const owners = [...new Set((userIds ?? []).filter(Boolean))];
+      // No boards still means the shared lanes: they are drawn on every board,
+      // so `IN ()` is neither valid SQL nor the right answer.
+      const where: any = owners.length
+        ? { [Op.or]: [{ is_shared: true }, { user_id: { [Op.in]: owners } }] }
+        : { is_shared: true };
+      return await TaskGroup.findAll({
+        where,
+        order: [
+          ["position", "ASC"],
+          ["created_at", "ASC"],
+        ],
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
   // The boards an AM may act on: their own team, plus the shared users they
   // share a domain with. Deliberately the same set
   // adminManagerRepository.listAllusers draws the manager's user list from, so

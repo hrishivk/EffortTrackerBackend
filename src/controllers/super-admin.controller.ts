@@ -8,9 +8,6 @@ import { normalizeUserPayload } from "../utils/userPayload";
 import { toUserDetailsView } from "../utils/userDetailsView";
 
 const SuperAdminService = new superAdminService();
-
-// Everything the edit-user modal can be told. The snackbar renders
-// response.data.message verbatim, so these strings are part of the contract.
 const EDIT_USER_STATUS: Record<string, number> = {
   "User id is required": HTTP_statusCode.BadRequest,
   "User not found": HTTP_statusCode.NotFound,
@@ -39,7 +36,7 @@ const EDIT_USER_STATUS: Record<string, number> = {
   "You can only assign domains you are linked to": HTTP_statusCode.NoAccess,
 };
 
-// Messages that carry the offending ids and so cannot be matched exactly.
+                            
 const EDIT_USER_STATUS_PREFIXES: Array<[string, number]> = [
   ["Password must ", HTTP_statusCode.BadRequest],
   ["Blood group must be one of", HTTP_statusCode.BadRequest],
@@ -56,6 +53,7 @@ const editUserStatus = (message: string): number => {
   );
   return prefixed ? prefixed[1] : HTTP_statusCode.InternalServerError;
 };
+
 export class SuperAdminController {
     public async user(req: Request, res: Response) {
     try {
@@ -85,6 +83,7 @@ export class SuperAdminController {
       });
     }
   }
+  
   public async upsertDomain(req: Request, res: Response) {
     try {
       const { id, name, description, assigned_am_ids } = req.body;
@@ -289,8 +288,7 @@ export class SuperAdminController {
 
   public async fetchUsers(req:Request,res:Response){
     try {
-         const manager_id = req.user?.id;
-         console.log("enterrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrmamangeerrrrrrrrrrrrrrrrrrrrr",manager_id)
+      const manager_id = req.user?.id;
       const { search, role, isBlocked, project_id, page, limit, is_shared } = req.query;
       const userRole = req.user?.role;
       const userId = req.user?.id;
@@ -301,8 +299,6 @@ export class SuperAdminController {
         isBlocked: isBlocked as string,
         project_id: project_id as string,
         manager_id: userRole === "AM" ? userId : undefined,
-        // Only forwarded when actually present, so an absent param keeps
-        // meaning "both", not "non-shared".
         is_shared:
           is_shared === undefined ? undefined : String(is_shared),
         page: Math.max(parseInt(page as string) || 1, 1),
@@ -312,7 +308,6 @@ export class SuperAdminController {
       const users = data.users.map((user: any) => ({
         ..._.pick(user, ["id", "fullName", "email", "role", "department", "lastSeenAt", "is_shared"]),
         projects: user.projects?.map((p: any) => _.pick(p, ["id", "name"])),
-        // Only meaningful for shared users — the domains they are shared across
         domains: user.is_shared
           ? user.assignedDomains?.map((d: any) => _.pick(d, ["id", "name"])) ?? []
           : undefined,
@@ -382,9 +377,7 @@ export class SuperAdminController {
     }
 
   }
-  // GET /role-sp/user-details?id=USR-10023
-  // Backs the edit-user modal. Field names match what PATCH /role-sp/edit-user
-  // accepts, so the modal reads and writes the same shape.
+
   public async getUserDetails(req: Request, res: Response) {
     try {
       const { id } = req.query;
@@ -542,10 +535,7 @@ export class SuperAdminController {
     }
 
   }
-  // PATCH /role-sp/edit-user
-  // One route, two payloads: the User Details tab and the Change Password tab
-  // of the same modal. AM hits this too - there is no /role-am/edit-user - so
-  // the service scopes what an AM is allowed to change.
+
   public async updateUser(req: Request, res: Response) {
     try {
       const user = await SuperAdminService.updateOneUser(
@@ -566,9 +556,7 @@ export class SuperAdminController {
     }
   }
 
-  // PATCH /role-sp/reset-user-password
-  // The Change Password tab with nothing else attached. Same guards as
-  // edit-user; the frontend can move to it without a contract change.
+
   public async resetUserPassword(req: Request, res: Response) {
     try {
       const { id, password } = req.body ?? {};
@@ -596,16 +584,12 @@ export class SuperAdminController {
       const { project_id, user_ids } = req.body;
       const callerRole = req.user?.role;
       const callerId = req.user?.id;
-
-      // Auto-add AM to the project when they assign their team
       let finalUserIds = [...user_ids];
       if (callerRole === "AM" && callerId && !finalUserIds.includes(callerId)) {
         finalUserIds.push(callerId);
       }
 
       const data = await SuperAdminService.assignProjectMembers(project_id, finalUserIds);
-
-      // When an AM claims a project, also assign them to the project's domain
       if (callerRole === "AM" && callerId) {
         await SuperAdminService.assignProjectDomainToUser(project_id, callerId);
       }

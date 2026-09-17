@@ -2,8 +2,12 @@ import { TaskGroupRepository } from "../repositories/task-group.repository";
 import { TaskGroupPatch } from "../types/task.types";
 import { Role } from "../Enums/Role";
 import { statusForGroup } from "../repositories/user.repository";
+import { ReportDirectoryRepository } from "../repositories/report.repository";
+import { superAdminRepository } from "../repositories/super-admin.repository";
 
 const taskGroupRepository = new TaskGroupRepository();
+const directory = new ReportDirectoryRepository();
+const SuperAdminRepository = new superAdminRepository();
 
 // Only SP and AM can pull up someone else's board — the same rule
 // findDailyLogs applies to /task-list, so the groups a board returns always
@@ -44,6 +48,69 @@ const resolveBoardOwner = async (
   return assigned_to;
 };
 
+
+// How many boards one request may name explicitly. Bounds the authorization
+// loop below, which costs a lookup per id.
+const MAX_BOARDS_REQUESTED = 100;
+
+// The boards a /task-groups/all call covers.
+//
+// `assigned_to` given -> exactly those boards, each put through
+// resolveBoardOwner. An id outside the caller's reach is a 403, NOT a
+// silently dropped entry: a missing board reads as "that person has no lanes",
+// which is a different and wrong answer.
+//
+// `assigned_to` omitted -> every board the caller can reach, derived from
+// their role, so there is nothing to refuse.
+//
+// The caller's OWN board is always in the set. Deliberately unlike the team
+// report, which leaves the caller out because their own numbers skew a team
+// average — a manager still has a board of their own and needs its lanes.
+const resolveBoardSet = async (
+  callerId: string,
+  callerRole: string | undefined,
+  assigned_to?: string
+): Promise<string[]> => {
+  if (assigned_to !== undefined) {
+    const ids = [
+      ...new Set(
+        String(assigned_to)
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean)
+      ),
+    ];
+    if (!ids.length) {
+      throw new Error("assigned_to must name at least one user");
+    }
+    if (ids.length > MAX_BOARDS_REQUESTED) {
+      throw new Error(
+        `assigned_to accepts at most ${MAX_BOARDS_REQUESTED} user ids`
+      );
+    }
+    for (const id of ids) {
+      await resolveBoardOwner(callerId, callerRole, id);
+    }
+    return ids;
+  }
+
+  if (callerRole === Role.SuperAdmin) {
+    const members = await directory.allMembers();
+    return [...new Set([callerId, ...members.map((member) => member.id)])];
+  }
+
+  if (callerRole === Role.Admin) {
+    // The same set /role-sp/list-users and the team report resolve, so a user
+    // an AM can pick is a user whose lanes they can read, and nobody else.
+    const domainPeerIds = await SuperAdminRepository.getDomainPeerUserIds(
+      callerId
+    );
+    const members = await directory.managedBy(callerId, domainPeerIds);
+    return [...new Set([callerId, ...members.map((member) => member.id)])];
+  }
+
+  return [callerId];
+};
 // A shared lane is drawn on every board, so renaming or deleting one is not a
 // change to the board it was opened from — it hits everybody. Managing someone
 // else's board does not carry that, so keep it with SP.
@@ -93,6 +160,28 @@ export class TaskGroupService {
       throw error;
     }
   }
+
+  // Every lane the caller can see, across every board they can reach, in one
+  // call — the batch twin of listGroups, which names a single board.
+  //
+  // Returns { id, name } only. The board the frontend draws needs the label
+  // and the value it writes back to tasks.group_id, and nothing else; the
+  // ARRAY ORDER carries what `position` used to, because the query orders by
+  // (position, created_at) exactly as listByUser does. Do not re-sort it.
+  public async listAllGroups(
+    callerId: string,
+    callerRole?: string,
+    assigned_to?: string
+  ) {
+    try {
+      const boardIds = await resolveBoardSet(callerId, callerRole, assigned_to);
+      const groups = await taskGroupRepository.listForBoards(boardIds);
+      return groups.map((group) => ({ id: group.id, name: group.name }));
+    } catch (error) {
+      throw error;
+    }
+  }
+
 
   public async createGroup(
     callerId: string,

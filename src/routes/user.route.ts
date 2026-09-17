@@ -2,10 +2,12 @@ import expres, { Application, Router } from "express";
 import { userController } from "../controllers/user.Controller";
 import { roleGuards } from "../middlewares/verifyRole";
 import { WorkspaceController } from "../controllers/workspace.controller";
+import { ReportController } from "../controllers/report.controller";
 export class UserRoute {
   private router: Router = expres.Router();
   private controller = new userController();
   private workspaceController = new WorkspaceController();
+  private reportController = new ReportController();
   constructor() {
     this.router.get("/list-projects", roleGuards.allAcess, this.controller.listProjects);
     this.router.post("/task", roleGuards.allAcess, this.controller.task);
@@ -31,6 +33,9 @@ export class UserRoute {
     this.router.delete("/task-comment", roleGuards.allAcess, this.controller.deleteTaskComment);
 
     // Board Groups — a group lane lives alongside the four status lanes
+    // Registered before the single-board route so the literal path is never
+    // read as anything else if /task-groups ever gains a :param form.
+    this.router.get("/task-groups/all", roleGuards.allAcess, this.controller.listAllTaskGroups);
     this.router.get("/task-groups", roleGuards.allAcess, this.controller.listTaskGroups);
     this.router.post("/task-groups", roleGuards.allAcess, this.controller.createTaskGroup);
     this.router.patch("/task-groups", roleGuards.allAcess, this.controller.updateTaskGroup);
@@ -102,6 +107,14 @@ export class UserRoute {
     // Attendance
     this.router.post("/attendance", this.controller.recordAttendance);
     this.router.get("/attendance/my", roleGuards.allAcess, this.controller.getMyAttendance);
+    // The individual report (§1), at the prefix a USER or DEVLOPER already
+    // uses. Same handler as /role-am and /role-sp: the prefix says which
+    // screen, ReportService says who may read whose numbers. Without this a
+    // person could not open their own report without calling a manager route.
+    //
+    // No team report here on purpose — a USER manages nobody, and §3 answers
+    // that with a 403 rather than a team of one.
+    this.router.get("/reports/user", roleGuards.allAcess, this.reportController.userReport);
   }
   public getRouter(): Router {
     return this.router;
