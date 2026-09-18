@@ -13,84 +13,124 @@ const notificationRepo = new NotificationRepository();
 
 
 export class superAdminRepository {
-  public async getProjectStats(userId?: string, userRole?: string) {
-    try {
-      // Build project filter based on role (same logic as listAllProjects)
-      let projectWhereClause: any = {};
+  // Which projects a caller is allowed to see, as a Sequelize `where`.
+  // Returns null for SP - they see everything, so there is nothing to filter.
+  //
+  // Two layers, and the order matters:
+  //   1. the ways IN - direct membership, their team's membership (AM only),
+  //      projects they created, and for an AM the SP-created projects that no
+  //      AM has picked up yet;
+  //   2. the department gate, which narrows layer 1 but deliberately EXEMPTS
+  //      projects the caller is directly assigned to.
+  //
+  // That exemption is the point. The gate used to be AND-ed over the whole
+  // clause, so an AM assigned to a project outside their own department never
+  // saw it - the assignment was a silent no-op. An explicit assignment now
+  // always wins.
+  private async buildProjectVisibilityWhere(
+    userId?: string,
+    userRole?: string,
+  ): Promise<any | null> {
+    if (userRole === "SP" || !userId) return null;
 
-      if (userRole === "AM" && userId) {
-        // 1. Projects directly assigned to this AM
-        const myDirectProjects = await ProjectMember.findAll({
-          where: { user_id: userId },
+    // 1. Projects directly assigned to this user.
+    const myDirect = await ProjectMember.findAll({
+      where: { user_id: userId },
+      attributes: ["project_id"],
+      raw: true,
+    });
+    const myDirectProjectIds = [
+      ...new Set(myDirect.map((pm: any) => String(pm.project_id))),
+    ];
+
+    const waysIn: any[] = [
+      { id: { [Op.in]: myDirectProjectIds } },
+      { created_by: userId },
+    ];
+
+    if (userRole === "AM") {
+      // 2. Projects where this AM's team members are assigned.
+      const myTeam = await User.findAll({
+        where: { manager_id: userId },
+        attributes: ["id"],
+        raw: true,
+      });
+      const myTeamIds = myTeam.map((u: any) => u.id);
+
+      if (myTeamIds.length > 0) {
+        const teamProjects = await ProjectMember.findAll({
+          where: { user_id: { [Op.in]: myTeamIds } },
           attributes: ["project_id"],
           raw: true,
         });
-        const myDirectProjectIds = myDirectProjects.map((pm: any) => pm.project_id);
-
-        // 2. Projects where AM's team members are assigned
-        const myTeam = await User.findAll({
-          where: { manager_id: userId },
-          attributes: ["id"],
-          raw: true,
-        });
-        const myTeamIds = myTeam.map((u: any) => u.id);
-
-        let myTeamProjectIds: string[] = [];
-        if (myTeamIds.length > 0) {
-          const teamProjects = await ProjectMember.findAll({
-            where: { user_id: { [Op.in]: myTeamIds } },
-            attributes: ["project_id"],
-            raw: true,
-          });
-          myTeamProjectIds = teamProjects.map((pm: any) => pm.project_id);
+        const myTeamProjectIds = [
+          ...new Set(teamProjects.map((pm: any) => String(pm.project_id))),
+        ];
+        if (myTeamProjectIds.length > 0) {
+          waysIn.push({ id: { [Op.in]: myTeamProjectIds } });
         }
+      }
 
-        const allAMs = await User.findAll({
-          where: { role: "AM" },
-          attributes: ["id"],
-          raw: true,
-        });
-        const allAMIds = allAMs.map((u: any) => u.id);
+      // 3. Projects no AM holds yet - visible to every AM until one is assigned.
+      const allAMs = await User.findAll({
+        where: { role: "AM" },
+        attributes: ["id"],
+        raw: true,
+      });
+      const allAMIds = allAMs.map((u: any) => u.id);
 
-        let projectsAssignedToAnyAM: string[] = [];
-        if (allAMIds.length > 0) {
-          const amAssignedProjects = await ProjectMember.findAll({
-            where: { user_id: { [Op.in]: allAMIds } },
-            attributes: ["project_id"],
-            raw: true,
-          });
-          projectsAssignedToAnyAM = [...new Set(amAssignedProjects.map((pm: any) => pm.project_id))];
-        }
+      const amAssignedProjects = await ProjectMember.findAll({
+        where: { user_id: { [Op.in]: allAMIds } },
+        attributes: ["project_id"],
+        raw: true,
+      });
+      const projectsAssignedToAnyAM = [
+        ...new Set(amAssignedProjects.map((pm: any) => String(pm.project_id))),
+      ];
 
-        // AM sees: assigned projects + team projects + projects they created
-        //        + SP-created projects not assigned to any AM
-        const allMyProjectIds = [...new Set([...myDirectProjectIds, ...myTeamProjectIds])];
-        projectWhereClause[Op.or] = [
-          { id: { [Op.in]: allMyProjectIds } },
-          { created_by: userId },
+      // Op.in/Op.notIn on an empty array compile to `IN (NULL)`, which matches
+      // nothing - so only add each key when it actually has ids to test.
+      const unclaimed: any = {
+        [Op.or]: [{ created_by: null }, { created_by: { [Op.notIn]: allAMIds } }],
+      };
+      if (projectsAssignedToAnyAM.length > 0) {
+        unclaimed.id = { [Op.notIn]: projectsAssignedToAnyAM };
+      }
+      waysIn.push(unclaimed);
+    }
+
+    const visibility: any = { [Op.or]: waysIn };
+
+    // Department gate. Matched exactly, so a stray case or space in either
+    // users.department or projects.client_department will hide a project that
+    // is only in scope by department - an assigned one still comes through.
+    const currentUser: any = await User.findByPk(userId, {
+      attributes: ["department"],
+      raw: true,
+    });
+    if (currentUser?.department) {
+      return {
+        [Op.and]: [
+          visibility,
           {
-            id: { [Op.notIn]: projectsAssignedToAnyAM },
             [Op.or]: [
-              { created_by: null },
-              { created_by: { [Op.notIn]: allAMIds } },
+              { client_department: currentUser.department },
+              { id: { [Op.in]: myDirectProjectIds } },
             ],
           },
-        ];
-      }
-      // SP sees all — no filter needed
+        ],
+      };
+    }
 
-      // Category filter: AM/User only see projects matching their department
-      if (userRole !== "SP" && userId) {
-        const currentUser = await User.findByPk(userId, { attributes: ["department"], raw: true });
-        if (currentUser?.department) {
-          projectWhereClause = {
-            [Op.and]: [
-              projectWhereClause,
-              { client_department: currentUser.department },
-            ],
-          };
-        }
-      }
+    return visibility;
+  }
+
+  public async getProjectStats(userId?: string, userRole?: string) {
+    try {
+      // Same visibility rules as the project list, so the cards and the table
+      // can never disagree about which projects are in scope.
+      const projectWhereClause =
+        (await this.buildProjectVisibilityWhere(userId, userRole)) || {};
 
       // Get filtered project IDs
       const filteredProjects = await Project.findAll({
@@ -310,99 +350,14 @@ export class superAdminRepository {
         },
       ];
 
-      let whereClause: any = {};
+      const visibility = await this.buildProjectVisibilityWhere(userId, userRole);
 
+      const clauses: any[] = [];
+      if (visibility) clauses.push(visibility);
       if (search && search.trim()) {
-        whereClause.name = { [Op.iLike]: `%${search.trim()}%` };
+        clauses.push({ name: { [Op.iLike]: `%${search.trim()}%` } });
       }
-
-      if (userRole === "AM" && userId) {
-        // 1. Projects directly assigned to this AM
-        const myDirectProjects = await ProjectMember.findAll({
-          where: { user_id: userId },
-          attributes: ["project_id"],
-          raw: true,
-        });
-        const myDirectProjectIds = myDirectProjects.map((pm: any) => pm.project_id);
-
-        // 2. Projects where AM's team members are assigned
-        const myTeam = await User.findAll({
-          where: { manager_id: userId },
-          attributes: ["id"],
-          raw: true,
-        });
-        const myTeamIds = myTeam.map((u: any) => u.id);
-
-        let myTeamProjectIds: string[] = [];
-        if (myTeamIds.length > 0) {
-          const teamProjects = await ProjectMember.findAll({
-            where: { user_id: { [Op.in]: myTeamIds } },
-            attributes: ["project_id"],
-            raw: true,
-          });
-          myTeamProjectIds = teamProjects.map((pm: any) => pm.project_id);
-        }
-
-        // 3. Projects not assigned to any AM (SP-created unassigned projects visible to all AMs)
-        const allAMs = await User.findAll({
-          where: { role: "AM" },
-          attributes: ["id"],
-          raw: true,
-        });
-        const allAMIds = allAMs.map((u: any) => u.id);
-
-        let projectsAssignedToAnyAM: string[] = [];
-        if (allAMIds.length > 0) {
-          const amAssignedProjects = await ProjectMember.findAll({
-            where: { user_id: { [Op.in]: allAMIds } },
-            attributes: ["project_id"],
-            raw: true,
-          });
-          projectsAssignedToAnyAM = [...new Set(amAssignedProjects.map((pm: any) => pm.project_id))];
-        }
-
-        // AM sees: assigned projects + team projects + projects they created
-        //        + SP-created projects not assigned to any AM
-        const allMyProjectIds = [...new Set([...myDirectProjectIds, ...myTeamProjectIds])];
-        whereClause[Op.or] = [
-          { id: { [Op.in]: allMyProjectIds } },
-          { created_by: userId },
-          {
-            id: { [Op.notIn]: projectsAssignedToAnyAM },
-            [Op.or]: [
-              { created_by: null },
-              { created_by: { [Op.notIn]: allAMIds } },
-            ],
-          },
-        ];
-      } else if (userRole !== "SP" && userId) {
-        // USER/DEVLOPER see only assigned + created projects
-        const memberProjects = await ProjectMember.findAll({
-          where: { user_id: userId },
-          attributes: ["project_id"],
-          raw: true,
-        });
-        const projectIds = memberProjects.map((pm: any) => pm.project_id);
-        whereClause[Op.or] = [
-          { id: { [Op.in]: projectIds } },
-          { created_by: userId },
-        ];
-      }
-
-      // Category filter: AM/User only see projects matching their department
-      if (userRole !== "SP" && userId) {
-        const currentUser = await User.findByPk(userId, { attributes: ["department"], raw: true });
-        if (currentUser?.department) {
-          whereClause = {
-            [Op.and]: [
-              whereClause,
-              { client_department: currentUser.department },
-            ],
-          };
-        }
-      }
-
-      console.log("Final whereClause:", JSON.stringify(whereClause, null, 2));
+      const whereClause: any = clauses.length ? { [Op.and]: clauses } : {};
 
       const queryOptions: any = {
         where: whereClause,

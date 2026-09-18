@@ -41,16 +41,7 @@ const SCOPED_WHERE = `
 
 const SCOPED_ROWS = `${SCOPED_FROM}${SCOPED_WHERE}`;
 
-// ── Timer columns for the export ─────────────────────────────────────────────
-//
-// start_time / end_time are the ACTUAL work (stamped on status transitions),
-// as opposed to start_date / due_date which are the plan. Since nothing in the
-// app writes the plan, these are the only real dates the sheet can show.
-//
-// The subtask roll-up, matching the List View's taskTiming(): a task WITH
-// subtasks starts when its first subtask starts and ends when its last one
-// finishes. Only direct children — a subtask is one level deep. A task with no
-// children keeps its own clock, and a subtask row uses its own.
+
 const SUBTASK_ROLLUP = `
            LEFT JOIN LATERAL (
              SELECT COUNT(*)::int AS n,
@@ -66,14 +57,7 @@ const SUBTASK_ROLLUP = `
 
 const EFFECTIVE_START = `(CASE WHEN kids.n > 0 THEN kids.min_start ELSE t.start_time END)`;
 
-// "null while it is still running", which is NOT the same as "end_time IS NULL".
-// A task that was stopped and then resumed keeps its OLD end_time, so the row
-// still carries a timestamp that is now EARLIER than start_time — the
-// isSessionOpen rule in user.repository. Reporting that stale value would show
-// a task ending before it began. One row in the live data is in that state.
-//
-// A parent is running while ANY of its children is: it cannot have finished
-// before its last subtask did.
+
 const EFFECTIVE_END = `(CASE
                           WHEN kids.n > 0
                             THEN CASE WHEN kids.running > 0 THEN NULL ELSE kids.max_end END
@@ -114,35 +98,23 @@ export interface MemberBucket extends Measures {
   user_id: string;
 }
 
-// One row of the export sheet. Every date is 'YYYY-MM-DD' or null; `status`
-// leaves here RAW (the stored slug or a custom lane name) and is turned into a
-// display label in the service.
+
 export interface TaskRow {
   id: string;
   description: string | null;
   project: string | null;
   status: string;
   start_date: string | null;
-  // Full ISO-8601 UTC ("2026-09-09T15:15:00Z"). Formatted in Postgres, not by
-  // serialising a JS Date, for the same reason the date-only fields are: a
-  // Date coming back through the driver gets re-rendered in the server's
-  // offset and the hour shifts.
+
   start_time: string | null;
   end_time: string | null;
   completed_at: string | null;
   due_date: string | null;
 }
 
-// The row cap. A per-user window is far smaller than this in practice — the
-// whole tasks table is 773 rows today — so truncation should never fire; it is
-// here so a pathological range cannot pull an unbounded result into memory.
-// The service reports `tasks_truncated` when it does fire, rather than
-// silently shipping a short sheet.
+
 export const TASK_ROWS_LIMIT = 5000;
 
-// pg returns bigint as a string (it does not fit a JS number in the general
-// case) and COUNT(...)::int as a number. Everything crossing into the response
-// goes through here so the API never emits "152280" where it documents 152280.
 const num = (value: unknown): number => {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -156,15 +128,9 @@ const toMeasures = (row: any): Measures => ({
 });
 
 export class ReportRepository {
-  // One row per day that has any work in it. Days with nothing are NOT
-  // returned — the service zero-fills them, because a gap in this array is a
-  // real fact about the window and the chart has to draw it as zero rather
-  // than as a straight line from Friday to Monday.
+
   public async dailyTotals(filters: ReportFilters): Promise<DailyBucket[]> {
     try {
-      // `IN ()` is not valid SQL, and an empty scope has no work in it by
-      // definition — an AM whose team is empty, or a department filter that
-      // matched nobody.
       if (!filters.userIds.length) return [];
 
       const sequelize = Database.getSequelize();
@@ -186,10 +152,6 @@ export class ReportRepository {
         }
       );
 
-      // to_char, not date::text: a DATEONLY column comes back from pg as a
-      // JS Date through some driver paths, and .toISOString() on it would
-      // shift the day by the server's offset — the whole bug this range work
-      // exists to remove. Formatting in Postgres leaves no Date to mishandle.
       return rows.map((row) => ({ date: String(row.date), ...toMeasures(row) }));
     } catch (error) {
       console.error("Error in dailyTotals:", error);
@@ -197,10 +159,7 @@ export class ReportRepository {
     }
   }
 
-  // One row per member who has any work in the window. Members with none are
-  // absent here and zero-filled by the service: "nobody logged anything this
-  // week" is the most useful thing a team report can say, and dropping the row
-  // hides it.
+
   public async memberTotals(filters: ReportFilters): Promise<MemberBucket[]> {
     try {
       if (!filters.userIds.length) return [];
@@ -233,23 +192,7 @@ export class ReportRepository {
     }
   }
 
-  // The individual rows behind the totals — the export sheet.
-  //
-  // Same SCOPED_WHERE as dailyTotals and memberTotals, so `tasks.length` equals
-  // `totals.tasks_worked` exactly unless the cap fired. That is not a
-  // coincidence to be maintained by hand; it is the same string.
-  //
-  // `completed_at` is DERIVED, because tasks has no completion column. For a
-  // completed row it is that row's daily-log date, which is the day it was
-  // completed: carry-over only moves unfinished work (in_progress /
-  // yet_to_start), so a completed row stays in the log of the day it was
-  // finished and is never copied forward again. NULL for anything not
-  // completed, which is the honest answer for work still in flight.
-  //
-  // t.end_time was the other candidate and is worse: it records when the TIMER
-  // last stopped, so a task paused on Monday and marked done on Wednesday
-  // carries Monday. The two disagree on 27% of the completed rows in the live
-  // data, and on those the log date is the correct one.
+
   public async taskRows(
     filters: ReportFilters,
     limit: number = TASK_ROWS_LIMIT
@@ -289,8 +232,7 @@ export class ReportRepository {
         }
       );
 
-      // LIMIT is asked for one more than the cap purely so the service can tell
-      // "exactly at the cap" from "there was more", without a second COUNT.
+
       return rows.map((row) => ({
         id: String(row.id),
         description: row.description ?? null,
@@ -309,15 +251,7 @@ export class ReportRepository {
   }
 }
 
-// ── The reportable population ────────────────────────────────────────────────
-//
-// Who a report MAY cover is §3's business, decided in report.service. What
-// lives here is only how to fetch a set of users once that decision is made.
 
-// Blocked accounts are excluded everywhere below. A blocked person cannot log
-// work, so their row would be a permanent zero that makes every team average
-// look worse than it is — and "include members with nothing in the window"
-// exists to surface someone who went quiet, not someone who was switched off.
 const ACTIVE_MEMBER_ROLES = ["AM", "MG", "USER", "DEVLOPER"];
 
 export interface MemberRow {
@@ -338,8 +272,7 @@ export class ReportDirectoryRepository {
     }
   }
 
-  // The user ids linked to one department (a `domains` row — the app calls the
-  // same thing a domain in the schema and a department in the UI).
+
   public async userIdsInDepartment(department_id: string): Promise<string[]> {
     try {
       const rows: any[] = await DomainAssignment.findAll({
@@ -353,9 +286,7 @@ export class ReportDirectoryRepository {
     }
   }
 
-  // `ids` is the already-authorised set from §3. Ordered by name so the
-  // zero-work members the service appends land in a stable place and the
-  // members page does not reshuffle between requests.
+
   public async membersByIds(ids: string[]): Promise<MemberRow[]> {
     try {
       if (!ids.length) return [];
@@ -374,11 +305,7 @@ export class ReportDirectoryRepository {
     }
   }
 
-  // Everyone an AM manages: their own team plus shared users assigned to one
-  // of their domains — deliberately the same set adminManagerRepository
-  // .listAllusers and /role-sp/list-users return them, so every person an AM
-  // can see in the member picker is a person whose report they can open, and
-  // nobody else is.
+
   public async managedBy(
     manager_id: string,
     domainPeerIds: string[]
@@ -408,9 +335,7 @@ export class ReportDirectoryRepository {
     }
   }
 
-  // Every reportable account, for SP. SP itself is excluded by
-  // ACTIVE_MEMBER_ROLES: a super admin is not a member of anybody's team, and
-  // a row of zeroes for the platform owner is noise in every team average.
+ 
   public async allMembers(): Promise<MemberRow[]> {
     try {
       const rows: any[] = await User.findAll({
