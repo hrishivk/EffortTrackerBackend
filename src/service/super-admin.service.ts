@@ -450,6 +450,15 @@ export class superAdminService {
       throw error;
     }
   }
+  public async getProject(id: string, userId?: string, userRole?: string) {
+    try {
+      if (!id) throw new Error("Project id is required");
+      return await SuperAdminRepository.findProjectDetail(id, userId, userRole);
+    } catch (error) {
+      throw error;
+    }
+  }
+
   public async getAllUsers(filters: {
     search?: string;
     role?: string;

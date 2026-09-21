@@ -8,6 +8,7 @@ import { col, fn, literal, Op, Sequelize, where } from "sequelize";
 import { AddUserDTO, EditUserDTO } from "../types/user.types";
 import { Task } from "../connection/models/tasks";
 import { NotificationRepository } from "./notification.repository";
+import { toProjectDetailView, toProjectView } from "../utils/projectView";
 
 const notificationRepo = new NotificationRepository();
 
@@ -397,35 +398,68 @@ export class superAdminRepository {
         });
       });
 
-      const data = projects.map((p: any) => {
-        const plain = p.get({ plain: true });
-        const tasks = taskMap.get(plain.id) || { total: 0, completed: 0 };
-        const progress = tasks.total === 0 ? 0 : Math.round((tasks.completed / tasks.total) * 100);
-
-        return {
-          id: plain.id,
-          name: plain.name,
-          description: plain.description,
-          dueDate: plain.end_date,
-          startDate: plain.start_date,
-          clientDepartment: plain.client_department || null,
-          status: plain.status?.toUpperCase().replace("_", " ") || "ACTIVE",
-          progress,
-          totalTasks: tasks.total,
-          completedTasks: tasks.completed,
-          domain: plain.domain || null,
-          teamAssigned: (plain.members || []).map((m: any) => ({
-            id: m.id,
-            name: m.fullName,
-            avatar: "",
-          })),
-        };
-      });
+      const data = projects.map((p: any) =>
+        toProjectView(p, taskMap.get(p.id) || { total: 0, completed: 0 }),
+      );
 
       return {
         data,
         totalPages: limit ? Math.ceil(count / limit) : 1,
       };
+    } catch (error) {
+      throw error;
+    }
+  }
+  // One project by id, for the edit screen.
+  //
+  // Visibility is the SAME clause the list uses, so a caller cannot open by id
+  // a project the list would never have shown them - otherwise guessing an id
+  // would be a way around the department gate.
+  public async findProjectDetail(id: string, userId?: string, userRole?: string) {
+    try {
+      const visibility = await this.buildProjectVisibilityWhere(userId, userRole);
+      const clauses: any[] = [{ id }];
+      if (visibility) clauses.push(visibility);
+
+      const project = await Project.findOne({
+        where: { [Op.and]: clauses },
+        include: [
+          {
+            model: User,
+            as: "members",
+            attributes: ["id", "fullName"],
+            through: { attributes: [] },
+            where: { role: { [Op.ne]: "SP" } },
+            required: false,
+          },
+          {
+            model: Domain,
+            as: "domain",
+            attributes: ["id", "name"],
+          },
+        ],
+      });
+      if (!project) throw new Error("Project not found");
+
+      const taskCounts: any[] = await Task.findAll({
+        attributes: [
+          [fn("COUNT", col("id")), "total_tasks"],
+          [
+            fn(
+              "SUM",
+              Sequelize.literal(`CASE WHEN status = 'completed' THEN 1 ELSE 0 END`),
+            ),
+            "completed_tasks",
+          ],
+        ],
+        where: { project_id: id },
+        raw: true,
+      });
+
+      return toProjectDetailView(project, {
+        total: Number(taskCounts[0]?.total_tasks) || 0,
+        completed: Number(taskCounts[0]?.completed_tasks) || 0,
+      });
     } catch (error) {
       throw error;
     }

@@ -178,24 +178,31 @@ export class SuperAdminController {
     }
   }
 
+  // GET /role-sp/project?id=... - one project, for the edit screen.
+  //
+  // Used to be an unrouted copy of listProjects that ignored `id`, which is why
+  // the frontend's edit fetch 404'd: no GET was ever registered on /project.
   public async fetchProject(req: Request, res: Response) {
     try {
-      const userId = req.user?.id;
-      const userRole = req.user?.role;
-      const search = req.query.search as string | undefined;
-      const page = req.query.page ? parseInt(req.query.page as string) : undefined;
-      const limit = req.query.limit ? parseInt(req.query.limit as string) : undefined;
-      const result = await SuperAdminService.getAllProjects(userId, userRole, search, page, limit);
+      const { id } = req.query;
+      const data = await SuperAdminService.getProject(
+        id as string,
+        req.user?.id,
+        req.user?.role,
+      );
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
-        message: "Fetched successful",
-        data: result.data,
-        totalPages: result.totalPages,
+        message: "Project fetched successfully",
+        data,
       });
     } catch (error: any) {
-      sendResponse(res, HTTP_statusCode.InternalServerError, {
+      const statusMap: Record<string, number> = {
+        "Project not found": HTTP_statusCode.NotFound,
+        "Project id is required": HTTP_statusCode.BadRequest,
+      };
+      sendResponse(res, statusMap[error.message] || HTTP_statusCode.InternalServerError, {
         success: false,
-        message: error.message || "Fetching failed",
+        message: error.message || "Fetching project failed",
       });
     }
   }

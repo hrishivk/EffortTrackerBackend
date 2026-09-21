@@ -8,6 +8,51 @@ export interface TaskStatusUpdate {
   status?: string;
   group_id?: string | null;
   DailyTaskLog?: any;
+
+  // ── Content edits ─────────────────────────────────────────────────────────
+  //
+  // The edit modal's fields, on the same PATCH as the board's drag-and-drop.
+  // One route rather than two because both need the identical daily-log-lock
+  // check and both return the same read model; splitting them would duplicate
+  // the guard and let a client PATCH a locked log through the other door.
+  //
+  // Same `undefined` rule as above: absent means "leave unchanged", so the
+  // client sends only what the user actually touched. `start_date: null` and
+  // `due_date: null` clear the date; `description` cannot be cleared, because
+  // a task with no description is unreadable on the board.
+  description?: string;
+  priority?: string;
+  start_date?: string | null;
+  due_date?: string | null;
+  tags?: unknown;
+  // Parent-only. Rejected on a row that has a parent_id — a subtask has no
+  // children to order.
+  sequential?: unknown;
+}
+
+// POST /role-user/task/subtask — add one subtask to an existing parent.
+//
+// Deliberately NOT the create payload: everything derivable from the parent
+// (project_id, room_id, and position when omitted) is read off the parent row
+// instead of being trusted from the client. POST /task with a parent_id skips
+// all three, which is why that path leaves the child on position 0 and outside
+// its parent's room.
+export interface SubtaskCreateInput {
+  parent_id: string;
+  description: string;
+  // Omitted means the subtask lands in the parent's own daily log, i.e. it
+  // belongs to whoever owns the parent. Given, it gets that person's log for
+  // today — assignment lives on the log, not on tasks.
+  assigned_to?: string;
+  // Who is performing the action. Falls back to the parent log's created_by,
+  // so a client that does not send it still produces a correctly-owned log.
+  created_by?: string;
+  priority?: string;
+  start_date?: string;
+  due_date?: string;
+  tags?: unknown;
+  // Omitted means "last": MAX(position) + 1 across the existing children.
+  position?: number;
 }
 export interface TaskWithDailyLog extends Task {
   isLocked: boolean;

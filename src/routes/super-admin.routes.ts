@@ -22,6 +22,7 @@ export class SuperAdminRoute {
     this.router.get("/list-domains", roleGuards.AdminOrSuperAdmin, this.controller.fetchDomain);
     this.router.delete("/domain", roleGuards.AdminOrSuperAdmin, this.controller.deleteDomain);
     this.router.get("/project-stats", roleGuards.AdminOrSuperAdmin, this.controller.projectStats);
+    this.router.get("/project", roleGuards.AdminOrSuperAdmin, this.controller.fetchProject);
     this.router.post("/project", roleGuards.AdminOrSuperAdmin, this.controller.upsertProject);
     this.router.patch("/project-status", roleGuards.AdminOrSuperAdmin, this.controller.updateProjectStatus);
     this.router.delete("/project", roleGuards.AdminOrSuperAdmin, this.controller.deleteProject);

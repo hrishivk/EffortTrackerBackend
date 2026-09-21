@@ -183,6 +183,15 @@ export class userController {
       const payload: TaskStatusUpdate = { id };
       if ("status" in body) payload.status = body.status;
       if ("group_id" in body) payload.group_id = body.group_id;
+      // Key-presence, not truthiness, on every one of these: the service reads
+      // `undefined` as "leave unchanged" and an explicit null on a date as
+      // "clear it", and `if (body.start_date)` would collapse the two.
+      if ("description" in body) payload.description = body.description;
+      if ("priority" in body) payload.priority = body.priority;
+      if ("start_date" in body) payload.start_date = body.start_date;
+      if ("due_date" in body) payload.due_date = body.due_date;
+      if ("tags" in body) payload.tags = body.tags;
+      if ("sequential" in body) payload.sequential = body.sequential;
 
       const data = await UserService.updateStatus(payload);
       sendResponse(res, HTTP_statusCode.OK, {
@@ -207,20 +216,123 @@ export class userController {
         "Task not found": HTTP_statusCode.NotFound,
         "Group not found": HTTP_statusCode.NotFound,
         "Group belongs to a different board": HTTP_statusCode.BadRequest,
-        "Nothing to update: send status, group_id or both":
+        "Nothing to update: send status, group_id or an edited field":
           HTTP_statusCode.BadRequest,
       };
       const statusCode =
-        error.name === "SequentialBlockedError"
+        error.name === "SequentialBlockedError" ||
+        error.name === "SubtaskOpenError"
           ? HTTP_statusCode.Conflict
-          : errorStatusMap[error.message] ||
-            (String(error.message).startsWith("Invalid status")
-              ? HTTP_statusCode.BadRequest
-              : HTTP_statusCode.TaskFailed);
+          : // Every content-edit rejection: empty description, bad priority,
+            // unparseable date, due before start, sequential on a subtask.
+            error.name === "TaskValidationError"
+            ? HTTP_statusCode.BadRequest
+            : errorStatusMap[error.message] ||
+              (String(error.message).startsWith("Invalid status")
+                ? HTTP_statusCode.BadRequest
+                : HTTP_statusCode.TaskFailed);
 
       sendResponse(res, statusCode, {
         success: false,
         message: error.message || "Task status update failed",
+      });
+    }
+  }
+
+  // DELETE /role-user/task?id=<taskId> — remove a task, or one subtask.
+  //
+  // Irreversible, and a main task takes its subtasks with it, so the response
+  // reports exactly what went: the frontend confirms BEFORE calling, and the
+  // returned ids are what it drops from the list.
+  public async deleteTask(req: Request, res: Response) {
+    try {
+      const id = req.query.id as string;
+      if (!id) {
+        sendResponse(res, HTTP_statusCode.BadRequest, {
+          success: false,
+          message: "Task id is required",
+        });
+        return;
+      }
+      const data = await UserService.deleteTask({
+        id,
+        user: { id: req.user?.id, role: req.user?.role },
+      });
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: data.deleted_subtasks
+          ? `Task deleted with ${data.deleted_subtasks} subtask${
+              data.deleted_subtasks === 1 ? "" : "s"
+            }`
+          : "Task deleted successfully",
+        data,
+      });
+    } catch (error: any) {
+      const message = String(error.message ?? "");
+      const statusCode =
+        error.name === "TaskForbiddenError"
+          ? HTTP_statusCode.NoAccess
+          : error.name === "TaskValidationError"
+          ? HTTP_statusCode.BadRequest
+          : message === "Task not found"
+          ? HTTP_statusCode.NotFound
+          : message === "User not authenticated"
+          ? HTTP_statusCode.unAuthorized
+          : message === "Task is locked. Cannot delete." ||
+            message === "Daily log is locked. Cannot delete task."
+          ? HTTP_statusCode.locked
+          : HTTP_statusCode.TaskFailed;
+      sendResponse(res, statusCode, {
+        success: false,
+        message: error.message || "Task delete failed",
+      });
+    }
+  }
+
+  // POST /role-user/task/subtask — add one subtask to an existing task.
+  //
+  // project_id and room_id are deliberately NOT read off the body: the service
+  // takes them from the parent row. A client that sends them is ignored rather
+  // than trusted, because the only correct value is the parent's.
+  public async addSubtask(req: Request, res: Response) {
+    try {
+      const body = req.body ?? {};
+      const data = await UserService.addSubtask({
+        parent_id: body.parent_id,
+        description: body.description,
+        assigned_to: body.assigned_to,
+        // The caller identifies the actor, falling back to the token's user so
+        // the notification names somebody even when the client omits it.
+        created_by: body.created_by ?? req.user?.id,
+        priority: body.priority,
+        start_date: body.start_date,
+        due_date: body.due_date,
+        tags: body.tags,
+        position: body.position,
+      });
+      sendResponse(res, HTTP_statusCode.CREATED, {
+        success: true,
+        message: "Subtask added successfully",
+        data,
+      });
+    } catch (error: any) {
+      const message = String(error.message ?? "");
+      const isLocked =
+        message === "Daily log is locked. Cannot add new task." ||
+        message === "Task is locked. Cannot add a subtask.";
+      const isBadRequest =
+        error.name === "TaskValidationError" ||
+        error.name === "SubtaskValidationError";
+      const statusCode = isLocked
+        ? HTTP_statusCode.locked
+        : message === "Parent task not found"
+        ? HTTP_statusCode.NotFound
+        : isBadRequest
+        ? HTTP_statusCode.BadRequest
+        : HTTP_statusCode.TaskFailed;
+      sendResponse(res, statusCode, {
+        success: false,
+        message: error.message || "Subtask creation failed",
       });
     }
   }

@@ -114,24 +114,10 @@ const dailyLogDateWhere = (window?: string | DateRange): any => {
 
 export const MAX_SESSION_SECONDS = 8 * 60 * 60;
 
-// The four real statuses, as opposed to a group name sitting in status since
-// 009. Mirrors the set in user.service; kept here too so the parent roll-up
-// does not have to reach up into the service layer.
-const REAL_STATUS_SET = new Set([
-  "yet_to_start",
-  "in_progress",
-  "completed",
-  "blocked",
-]);
-
-// Only the three ordered states. `blocked` is deliberately absent: it is a real
-// status but not a step on the path, so the roll-up neither moves a parent to
-// it nor treats it as progress.
-const STATUS_RANK_ORDER: Record<string, number> = {
-  yet_to_start: 0,
-  in_progress: 1,
-  completed: 2,
-};
+// REAL_STATUS_SET and STATUS_RANK_ORDER lived here for rollUpParentStatus,
+// which is gone: a subtask's transition no longer writes its parent's row at
+// all. The service still has its own copies for the transition rules it
+// enforces on the task the client actually named.
 
 // A session is running if the clock is set and no stop came AFTER it. Checking
 // only "end_time is null" is wrong: a task that was stopped and then resumed
@@ -262,9 +248,12 @@ export class UserRepository {
       where: { id },
       include: [
         {
+          // id and created_by are here for the add-subtask path, which has to
+          // find or create the assignee's own log for the day and needs to know
+          // who owns the parent's.
           model: DailyTaskLog,
           as: "dailyLog",
-          attributes: ["locked", "assigned_to"],
+          attributes: ["id", "locked", "created_by", "assigned_to"],
         },
       ],
     });
@@ -1016,83 +1005,115 @@ export class UserRepository {
     }
   }
 
-  // §4(b): the parent's status is derived from its children, on the SERVER.
+  // The edit modal's fields. Separate from updateTaskLane rather than folded
+  // into it: that method's job is the clock and the lane, and its explicit
+  // `fields` list is what stops a save() from writing back a stale `comments`
+  // JSONB. Both keep their own narrow list and an edit that changes status AND
+  // description is two saves inside one transaction.
   //
-  // The frontend used to do this — first child to start set the parent
-  // in_progress, last to finish set it completed. With three people acting from
-  // three browsers that races and the parent ends up wrong, so it now happens
-  // here, inside the same transaction as the child's own update.
-  //
-  // Derivation:
-  //   every child completed          -> completed
-  //   any child started or finished  -> in_progress
-  //   otherwise (all yet_to_start)   -> left alone
-  //
-  // FORWARD ONLY. A parent never moves back: `blocked` on a child does not
-  // reopen a completed parent, and a parent parked in a custom group lane
-  // ("Production") is left entirely alone — since 009 status IS the lane name,
-  // so writing a status over it would silently pull the card out of its lane.
-  //
-  // Returns the parent when it changed, and the unchanged parent otherwise, so
-  // the caller can hand it straight back to the client either way. Null only
-  // when the parent has vanished.
-  public async rollUpParentStatus(
-    parent_id: string,
+  // Every value arrives already validated and normalized by the service —
+  // priority is Title case, tags are through normalizeTags, dates are
+  // YYYY-MM-DD — because `priority` is a Postgres ENUM and a raw value from
+  // req.body would surface as a database error rather than a 400.
+  public async updateTaskFields(
+    task: Task,
+    changes: {
+      description?: string;
+      priority?: string;
+      start_date?: string | null;
+      due_date?: string | null;
+      tags?: string[];
+      sequential?: boolean;
+    },
     transaction?: Transaction
-  ): Promise<Task | null> {
+  ): Promise<Task> {
     try {
-      const parent = await Task.findByPk(parent_id, { transaction });
-      if (!parent) return null;
+      const fields: string[] = [];
+      const set = <K extends keyof Task>(key: K, value: Task[K]) => {
+        (task as any)[key] = value;
+        fields.push(key as string);
+      };
 
-      // A locked day is frozen, and the parent now lives in a DIFFERENT daily
-      // log from its children — each child sits in its assignee's log. So the
-      // parent's log can be locked while a child's is not, and the roll-up
-      // would be the one write that slipped past the lock. Returned unchanged
-      // rather than thrown: the child's own transition is legitimate and must
-      // still succeed.
-      if (parent.isLocked) return parent;
+      if (changes.description !== undefined) set("description", changes.description as any);
+      if (changes.priority !== undefined) set("priority", changes.priority as any);
+      // null is meaningful here — it clears the date — so these test against
+      // undefined, not falsiness.
+      if (changes.start_date !== undefined) set("start_date", changes.start_date as any);
+      if (changes.due_date !== undefined) set("due_date", changes.due_date as any);
+      if (changes.tags !== undefined) set("tags", changes.tags as any);
+      if (changes.sequential !== undefined) set("sequential", changes.sequential as any);
 
-      const current = String(parent.status ?? "").toLowerCase().trim();
-      // A group lane is not a status; leave it.
-      if (!REAL_STATUS_SET.has(current)) return parent;
-      // Nothing rolls a completed parent back open.
-      if (current === "completed") return parent;
+      if (!fields.length) return task;
 
-      const children = await Task.findAll({
-        where: { parent_id },
-        attributes: ["id", "status"],
-        transaction,
-        raw: true,
-      });
-      if (!children.length) return parent;
+      task.updated_at = new Date();
+      fields.push("updated_at");
 
-      const statuses = children.map((c: any) =>
-        String(c.status ?? "").toLowerCase().trim()
-      );
-      const allCompleted = statuses.every((st) => st === "completed");
-      const anyStarted = statuses.some(
-        (st) => st === "in_progress" || st === "completed"
-      );
-
-      const target = allCompleted
-        ? "completed"
-        : anyStarted
-        ? "in_progress"
-        : undefined;
-      if (!target || target === current) return parent;
-
-      // Only ever forward along yet_to_start -> in_progress -> completed.
-      const from = STATUS_RANK_ORDER[current];
-      const to = STATUS_RANK_ORDER[target];
-      if (from === undefined || to === undefined || to <= from) return parent;
-
-      // Through updateTaskLane so the parent's own clock is handled the same
-      // way a manual transition handles it: its timer starts when the first
-      // child starts and banks when the last child finishes.
-      return await this.updateTaskLane(parent, { status: target }, transaction);
+      await task.save({ fields, transaction });
+      return task;
     } catch (error) {
-      console.error("Error rolling up parent status:", error);
+      console.error("Error updating task fields:", error);
       throw error;
     }
   }
+
+  // Deletes one task and, when it is a main task, its subtasks.
+  //
+  // The children are destroyed EXPLICITLY rather than left to the
+  // `ON DELETE CASCADE` on tasks.parent_id (migration 012). Two reasons: the
+  // delete then behaves identically whether or not 012 has been applied to the
+  // database it is running against, and the ids come back, so the response can
+  // tell the client exactly which rows to drop from the list instead of it
+  // guessing from the parent id.
+  //
+  // Deleting a SUBTASK takes nothing else with it — there is nothing below it.
+  public async deleteTaskCascade(
+    task: Task,
+    transaction?: Transaction
+  ): Promise<{ id: string; subtask_ids: string[] }> {
+    try {
+      const id = (task as any).id;
+      let subtask_ids: string[] = [];
+
+      if (!(task as any).parent_id) {
+        const children = await Task.findAll({
+          where: { parent_id: id },
+          attributes: ["id"],
+          transaction,
+          raw: true,
+        });
+        subtask_ids = children.map((child: any) => child.id);
+        if (subtask_ids.length) {
+          await Task.destroy({ where: { parent_id: id }, transaction });
+        }
+      }
+
+      await Task.destroy({ where: { id }, transaction });
+      return { id, subtask_ids };
+    } catch (error) {
+      console.error("Error deleting task:", error);
+      throw error;
+    }
+  }
+
+  // Highest position among a parent's children, or null when it has none.
+  // A new subtask goes to MAX + 1 so it lands at the bottom of the list
+  // instead of on the model's 0 default, which would put it above every
+  // existing child and, on a sequential parent, make it the one allowed to
+  // start first.
+  public async maxChildPosition(
+    parent_id: string,
+    transaction?: Transaction
+  ): Promise<number | null> {
+    try {
+      const max = await Task.max("position", {
+        where: { parent_id },
+        transaction,
+      });
+      return max === null || max === undefined ? null : Number(max);
+    } catch (error) {
+      console.error("Error reading max child position:", error);
+      throw error;
+    }
+  }
+
 }

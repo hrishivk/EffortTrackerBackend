@@ -15,6 +15,17 @@ export class UserRoute {
     this.router.patch("/task-lock", roleGuards.allAcess, this.controller.taskLock);
     this.router.patch("/updateTask", roleGuards.allAcess, this.controller.statusUpdate);
 
+    // Add one subtask to a task that already exists — the list view's "add
+    // subtask" row. Separate from POST /task because the parent supplies
+    // project_id, room_id and position; see UserService.addSubtask.
+    this.router.post("/task/subtask", roleGuards.allAcess, this.controller.addSubtask);
+
+    // Deleting a MAIN task deletes its subtasks with it; deleting a subtask
+    // takes nothing else. allAcess here, narrowed in UserService.deleteTask to
+    // the task's owners — deliberately stricter than the read rule, since on a
+    // room board "anyone who can see it" must not mean "anyone can destroy it".
+    this.router.delete("/task", roleGuards.allAcess, this.controller.deleteTask);
+
     // Task comments — on the tasks row, not a table of their own. A subtask is
     // already a row in tasks, so one column covers the main task and any
     // subtask alike.

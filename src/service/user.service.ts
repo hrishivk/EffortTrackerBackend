@@ -1,6 +1,7 @@
 import {
   UserRepository,
   normalizeTaskStatus,
+  normalizeTags,
   statusForGroup,
 } from "../repositories/user.repository";
 import { TaskGroupRepository } from "../repositories/task-group.repository";
@@ -11,11 +12,15 @@ import {
 } from "../types/user.types";
 
 
-import { TaskStatusUpdate, TaskWithDailyLog } from "../types/task.types";
+import {
+  SubtaskCreateInput,
+  TaskStatusUpdate,
+  TaskWithDailyLog,
+} from "../types/task.types";
 import { Task } from "../connection/models/tasks";
 import { DailyTaskLog } from "../connection/models/daily_task_logs";
 import { Project } from "../connection/models/project";
-import { DateRange } from "../utils/dateRange";
+import { DateRange, parseOptionalDateOnly } from "../utils/dateRange";
 import { Database } from "../connection/db/dbConnection";
 import { Transaction } from "sequelize";
 import { TaskNotificationService } from "./task-notification.service";
@@ -48,6 +53,69 @@ export class SequentialBlockedError extends Error {
 export class SubtaskValidationError extends Error {
   public readonly name = "SubtaskValidationError";
 }
+
+// Raised when a MAIN task is completed while one of its subtasks is still
+// open. Named rather than message-matched for the same reason
+// SequentialBlockedError is: the message counts the outstanding children and is
+// shown to the user as-is, so it has to be free to change.
+export class SubtaskOpenError extends Error {
+  public readonly name = "SubtaskOpenError";
+}
+
+// Raised when the caller may see a task but may not destroy it. Answered as
+// 403, so it is kept apart from the 400-shaped validation errors below.
+export class TaskForbiddenError extends Error {
+  public readonly name = "TaskForbiddenError";
+}
+
+// Raised by the edit and add-subtask paths for a payload the client should not
+// have sent. Carries its own name so the controller answers 400 without
+// matching on message text, the same trick SubtaskValidationError plays.
+export class TaskValidationError extends Error {
+  public readonly name = "TaskValidationError";
+}
+
+// tasks.priority is a Postgres ENUM('Low','Medium','High'). An unchecked value
+// off req.body reaches the driver as invalid input syntax — a 500 describing
+// the column — so it is validated here and answered as a 400 naming the three
+// legal values.
+const PRIORITIES = ["Low", "Medium", "High"];
+const normalizePriority = (value?: string): string | undefined => {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return undefined;
+  }
+  const raw = String(value).trim();
+  const title = raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+  if (!PRIORITIES.includes(title)) {
+    throw new TaskValidationError(
+      `Invalid priority. Expected one of: ${PRIORITIES.join(", ")}`
+    );
+  }
+  return title;
+};
+
+// An editable DATEONLY column. Three outcomes, not two: absent leaves the
+// column alone, an explicit null or "" clears it, and anything else has to
+// parse as a date. Clearing has to be expressible or a due date set by mistake
+// could never be removed.
+const parseEditableDate = (
+  value: unknown,
+  label: string
+): string | null | undefined => {
+  if (value === undefined) return undefined;
+  if (value === null || String(value).trim() === "") return null;
+  try {
+    return parseOptionalDateOnly(value, label) ?? null;
+  } catch (error: any) {
+    throw new TaskValidationError(error?.message ?? `Invalid ${label}`);
+  }
+};
+
+// Booleans arrive off req.body as "true" from a form and 1 from some clients,
+// and `sequential` is a NOT NULL boolean column. Same coercion createNewTask
+// applies on the create path.
+const coerceBoolean = (value: unknown): boolean =>
+  value === true || value === "true" || value === 1 || value === "1";
 
 // Resolves the comment authors for a page of tasks in one query, so the names
 // cost one round trip for the whole response rather than one per comment.
@@ -666,13 +734,86 @@ export class userService {
       const { id, status } = data;
       // An empty string would reach the FK as a bogus id; treat it as a clear.
       const group_id = data.group_id === "" ? null : data.group_id;
-      if (status === undefined && group_id === undefined) {
-        throw new Error("Nothing to update: send status, group_id or both");
+      const editsContent =
+        data.description !== undefined ||
+        data.priority !== undefined ||
+        data.start_date !== undefined ||
+        data.due_date !== undefined ||
+        data.tags !== undefined ||
+        data.sequential !== undefined;
+      if (status === undefined && group_id === undefined && !editsContent) {
+        throw new Error(
+          "Nothing to update: send status, group_id or an edited field"
+        );
       }
       const task = (await userRepository.findTask(id)) as TaskWithDailyLog;
       if (!task) throw new Error("Task not found");
       if (task.isLocked) {
         throw new Error("Daily log is locked. Cannot update task status.");
+      }
+
+      // Every content field validated BEFORE the transaction opens, so a bad
+      // priority on an edit that also moves the lane leaves the lane where it
+      // was rather than half-applying.
+      const content: {
+        description?: string;
+        priority?: string;
+        start_date?: string | null;
+        due_date?: string | null;
+        tags?: string[];
+        sequential?: boolean;
+      } = {};
+
+      if (data.description !== undefined) {
+        const description = String(data.description).trim();
+        // No clearing this one. A card with an empty title is unreadable on
+        // the board and there is nothing else on the row to identify it by.
+        if (!description) {
+          throw new TaskValidationError("description cannot be empty");
+        }
+        content.description = description;
+      }
+      if (data.priority !== undefined) {
+        const priority = normalizePriority(data.priority as string);
+        if (priority === undefined) {
+          throw new TaskValidationError("priority cannot be empty");
+        }
+        content.priority = priority;
+      }
+      const startDate = parseEditableDate(data.start_date, "start_date");
+      if (startDate !== undefined) content.start_date = startDate;
+      const dueDate = parseEditableDate(data.due_date, "due_date");
+      if (dueDate !== undefined) content.due_date = dueDate;
+      if (data.tags !== undefined) content.tags = normalizeTags(data.tags);
+      if (data.sequential !== undefined) {
+        // The flag lives on the parent and orders its children. A subtask has
+        // none, so accepting it there would store a value nothing ever reads
+        // and leave the client believing it had set an ordering.
+        if ((task as any).parent_id) {
+          throw new TaskValidationError(
+            "sequential applies to a main task, not a subtask"
+          );
+        }
+        content.sequential = coerceBoolean(data.sequential);
+      }
+
+      // Both halves of the range, whichever of them this request supplies:
+      // an edit that moves only the due date still has to land after the
+      // start date already on the row.
+      const effectiveStart =
+        content.start_date !== undefined
+          ? content.start_date
+          : ((task as any).start_date ?? null);
+      const effectiveDue =
+        content.due_date !== undefined
+          ? content.due_date
+          : ((task as any).due_date ?? null);
+      if (
+        effectiveStart &&
+        effectiveDue &&
+        String(effectiveDue) < String(effectiveStart)
+      ) {
+        throw new TaskValidationError("due_date cannot be before start_date");
       }
       let derivedStatus: string | undefined;
       if (group_id) {
@@ -701,13 +842,40 @@ export class userService {
 
       const parentId: string | null = (task as any).parent_id ?? null;
 
-      // One transaction around the order check, the child's own update and the
-      // parent roll-up. Section 4(b): the roll-up used to happen in the
-      // frontend, where three people acting from three browsers raced and left
-      // the parent on the wrong status.
+      // One transaction around both order checks and the task's own update, so
+      // each check is read against the same snapshot as the write it guards.
       const sequelize = Database.getSequelize();
       const { updated, parent } = await sequelize.transaction(
         async (t: Transaction) => {
+          // Section 4(c): a MAIN task cannot be completed while its own
+          // subtasks are open.
+          //
+          // The opposite direction from the roll-up that used to sit at the
+          // bottom of this transaction, and the reason removing it leaves no
+          // hole: the roll-up let a CHILD finish the parent, which is wrong.
+          // This stops the parent's OWNER finishing it early, which is the
+          // check that actually belongs here — Complete is offered whether
+          // children are open or not, so nothing else stands between a task
+          // badged 1/2 and a completed status.
+          //
+          // Inside the transaction for the same reason 4(a) is: without it,
+          // completing the parent and starting the last subtask in the same
+          // moment both pass.
+          if (!parentId && statusSlug(effectiveStatus) === "completed") {
+            const children = await userRepository.findChildren(id, t);
+            const open = children.filter(
+              (childRow: any) => statusSlug(childRow.status) !== "completed"
+            );
+            if (open.length) {
+              // Written to be shown to the user as-is.
+              throw new SubtaskOpenError(
+                `Can't complete this task — ${open.length} subtask${
+                  open.length === 1 ? "" : "s"
+                } still to finish`
+              );
+            }
+          }
+
           // Section 4(a): enforce the order. Inside the transaction and after
           // a fresh read of the siblings, so this is a real backstop for two
           // people clicking Start in the same moment and not just a repeat of
@@ -733,17 +901,37 @@ export class userService {
             }
           }
 
-          const child = await userRepository.updateTaskLane(
-            task,
-            { status: effectiveStatus, group_id },
-            t
-          );
+          // Skipped entirely on a content-only edit: updateTaskLane throws on
+          // an empty change set, and running it would stamp the clock for a
+          // status nobody sent.
+          let child = task as Task;
+          if (effectiveStatus !== undefined || group_id !== undefined) {
+            child = await userRepository.updateTaskLane(
+              task,
+              { status: effectiveStatus, group_id },
+              t
+            );
+          }
 
-          const rolled = parentId
-            ? await userRepository.rollUpParentStatus(parentId, t)
+          // Second save, same transaction, disjoint column list — see
+          // updateTaskFields on why the two are not merged.
+          child = await userRepository.updateTaskFields(child, content, t);
+
+          // NO parent roll-up. A task and its subtasks are separate units of
+          // work with separate clocks: finishing the last child used to write
+          // the parent's status, end_time and total_seconds, which recorded
+          // time against an owner who never touched it and marked work
+          // accepted that nobody had accepted. The parent is completed by
+          // whoever owns it, from its own control.
+          //
+          // The parent is still READ back below — a child's move changes its
+          // siblings' is_blocked/blocked_by, and that recomputation is what
+          // data.parent is for. Read, never written.
+          const parentRow = parentId
+            ? await userRepository.findTaskRaw(parentId, t)
             : null;
 
-          return { updated: child, parent: rolled };
+          return { updated: child, parent: parentRow };
         }
       );
 
@@ -761,9 +949,11 @@ export class userService {
       }
 
       // The updated child, plus the parent as the server now has it. `parent`
-      // is the whole card with every subtask re-decorated, so the board can
-      // replace it outright instead of patching a status it guessed at. Null
-      // for a top-level task.
+      // is the whole card with every subtask re-decorated, which is what the
+      // board needs after a child moves: the siblings' is_blocked/blocked_by
+      // are recomputed from the new statuses. The parent's OWN status, clock
+      // and times are untouched by any of this — see the transaction above.
+      // Null for a top-level task.
       //
       // Additive: everything the response carried before is still on the
       // object at the same key.
@@ -771,20 +961,289 @@ export class userService {
         ? await userRepository.findTaskWithSubtasks((parent as any).id)
         : null;
 
-      // capComments rather than decorateTask on the child: this read does not
-      // fetch its subtasks, and decorateTask would report `subtasks: []`, which
-      // a client holding a real list would read as "all deleted". It does keep
+      // A main task is re-read WITH its children and fully decorated, so an
+      // edit that renames the card or flips `sequential` hands back the same
+      // shape /task-list returns and the row can be replaced outright. A
+      // subtask is not: that read does not fetch children, and decorateTask
+      // would report `subtasks: []`, which a client holding a real list would
+      // read as "all deleted". It gets capComments instead, which still keeps
       // the comment array from arriving uncapped on every status click.
+      const selfView = parentId
+        ? null
+        : await userRepository.findTaskWithSubtasks((updated as any).id);
+
       const authors = await commentAuthorsFor(
-        parentView ? [updated, parentView] : [updated]
+        [updated, parentView, selfView].filter(Boolean) as any[]
       );
 
       return {
-        ...capComments(updated, authors),
+        ...(selfView
+          ? decorateTask(selfView, authors)
+          : capComments(updated, authors)),
         parent: parentView ? decorateTask(parentView, authors) : null,
       };
     } catch (error) {
       console.error("Error in updateStatus:", error);
+      throw error;
+    }
+  }
+
+  // DELETE /role-user/task?id=<taskId>
+  //
+  // A MAIN task takes its subtasks with it — a subtask cannot outlive the task
+  // it breaks down; there would be nothing to nest it under. A SUBTASK deletes
+  // alone, leaving the parent and its siblings where they are.
+  //
+  // Irreversible: the row is gone, and with it the time banked on it, which
+  // reports read straight from the tasks table. If that history has to survive
+  // a delete this needs a `deleted_at` column instead, which is a migration and
+  // a filter on every read.
+  public async deleteTask(data: {
+    id: string;
+    user?: { id?: string; role?: string };
+  }) {
+    try {
+      const id = String(data.id ?? "").trim();
+      if (!id) throw new TaskValidationError("Task id is required");
+
+      const task = (await userRepository.findTask(id)) as TaskWithDailyLog;
+      if (!task) throw new Error("Task not found");
+
+      const viewerId = data.user?.id;
+      if (!viewerId) throw new Error("User not authenticated");
+
+      // Deliberately NARROWER than TaskAccessService.canRead, which lets any
+      // active member of a room read a task. Reading is not deleting: on a
+      // room board that rule would let every member destroy someone else's
+      // work. Delete is for the people who own the task —
+      //
+      //   SP, the task's creator, the person it is assigned to, an AM over
+      //   that person's board, and for a subtask the parent's creator too,
+      //
+      // because the parent's owner is who arranges its breakdown.
+      const log: any = (task as any).dailyLog ?? (task as any).dataValues?.dailyLog;
+      const parentId: string | null = (task as any).parent_id ?? null;
+
+      const owners = new Set<string>();
+      if (log?.created_by) owners.add(log.created_by);
+      if (log?.assigned_to) owners.add(log.assigned_to);
+
+      let parent: any = null;
+      if (parentId) {
+        parent = await userRepository.findTask(parentId);
+        const parentLog: any =
+          parent?.dailyLog ?? parent?.dataValues?.dailyLog;
+        if (parentLog?.created_by) owners.add(parentLog.created_by);
+      }
+
+      let allowed =
+        data.user?.role === "SP" || owners.has(viewerId);
+
+      if (!allowed && data.user?.role === "AM") {
+        for (const owner of owners) {
+          if (await taskGroupRepository.isBoardManagedBy(viewerId, owner)) {
+            allowed = true;
+            break;
+          }
+        }
+      }
+      if (!allowed) {
+        throw new TaskForbiddenError("Not authorized to delete this task");
+      }
+
+      // Both locks, same as every other write on a task.
+      if (task.isLocked) {
+        throw new Error("Task is locked. Cannot delete.");
+      }
+      if (log?.locked) {
+        throw new Error("Daily log is locked. Cannot delete task.");
+      }
+
+      const sequelize = Database.getSequelize();
+      const removed = await sequelize.transaction(async (t: Transaction) =>
+        userRepository.deleteTaskCascade(task, t)
+      );
+
+      // A deleted SUBTASK hands back its parent, re-read after the commit: the
+      // siblings' is_blocked/blocked_by shift when one of them disappears, the
+      // same reason updateStatus returns it. A deleted main task has no parent
+      // to return.
+      const parentView = parentId
+        ? await userRepository.findTaskWithSubtasks(parentId)
+        : null;
+      const authors = parentView ? await commentAuthorsFor([parentView]) : new Map();
+
+      return {
+        id: removed.id,
+        parent_id: parentId,
+        // The subtasks that went with it. Empty for a deleted subtask.
+        deleted_subtask_ids: removed.subtask_ids,
+        deleted_subtasks: removed.subtask_ids.length,
+        parent: parentView ? decorateTask(parentView, authors as any) : null,
+      };
+    } catch (error) {
+      console.error("Error in deleteTask:", error);
+      throw error;
+    }
+  }
+
+  // POST /role-user/task/subtask — one subtask onto an existing parent, for
+  // the list view's "add subtask" row.
+  //
+  // Not POST /task with a parent_id. That path takes project_id, room_id and
+  // position from the client and so leaves the child on position 0 (above
+  // every sibling, and first to run on a sequential parent) and outside its
+  // parent's room whenever the client forgets to resend them. Here all three
+  // come off the parent row, which is the only place they can be right.
+  public async addSubtask(data: SubtaskCreateInput) {
+    try {
+      const parent_id = String(data.parent_id ?? "").trim();
+      if (!parent_id) {
+        throw new TaskValidationError("parent_id is required");
+      }
+      const description = String(data.description ?? "").trim();
+      if (!description) {
+        throw new TaskValidationError("description is required");
+      }
+
+      const parent = (await userRepository.findTask(
+        parent_id
+      )) as TaskWithDailyLog;
+      if (!parent) throw new Error("Parent task not found");
+      // One level only. The board draws a parent and its children; a
+      // grandchild would be stored and then never rendered anywhere.
+      if ((parent as any).parent_id) {
+        throw new TaskValidationError("A subtask cannot have subtasks");
+      }
+      if (parent.isLocked) {
+        throw new Error("Task is locked. Cannot add a subtask.");
+      }
+
+      const parentLog: any =
+        (parent as any).dailyLog ?? (parent as any).dataValues?.dailyLog;
+      if (parentLog?.locked) {
+        throw new Error("Daily log is locked. Cannot add new task.");
+      }
+
+      const priority =
+        normalizePriority(data.priority) ??
+        ((parent as any).priority as string | undefined);
+      const start_date = parseEditableDate(data.start_date, "start_date");
+      const due_date = parseEditableDate(data.due_date, "due_date");
+      if (start_date && due_date && String(due_date) < String(start_date)) {
+        throw new TaskValidationError("due_date cannot be before start_date");
+      }
+
+      const project_id: string | null = (parent as any).project_id ?? null;
+      // Inherited, never taken from the client: a subtask is the same piece of
+      // work as its parent, so it belongs on the same room board. This is the
+      // rule the subtasks[] array already follows on create.
+      const room_id: string | null = (parent as any).room_id ?? null;
+
+      // The same membership rule POST /task applies to subtasks[].assigned_to:
+      // inside a room, only an ACTIVE member can be handed work; outside one,
+      // the user merely has to exist. Checked before anything is written.
+      const assignee = data.assigned_to;
+      if (assignee) {
+        if (room_id) {
+          const allowed = await workspaceRepository.activeRoomMemberIds(room_id);
+          if (!allowed.includes(assignee)) {
+            throw new SubtaskValidationError(
+              `assigned_to (${assignee}) is not a member of room ${room_id}`
+            );
+          }
+        } else {
+          const missing = await workspaceRepository.missingUserIds([assignee]);
+          if (missing.includes(assignee)) {
+            throw new SubtaskValidationError(
+              `assigned_to (${assignee}) is not a known user`
+            );
+          }
+        }
+      }
+
+      const created_by: string | undefined =
+        data.created_by ?? parentLog?.created_by;
+
+      // No assignee, or the parent's own owner: the subtask goes straight into
+      // the parent's log. Anyone else gets their own log for today, because
+      // assignment IS the log's (created_by, assigned_to) pair — there is no
+      // assignee column on tasks to set instead.
+      let subLog: any = { id: (parent as any).daily_log_id };
+      if (assignee && assignee !== parentLog?.assigned_to) {
+        const dailytaskTime = new Date().toISOString().split("T")[0];
+        let log = await userRepository.findDailyTaskLog(
+          dailytaskTime,
+          created_by,
+          assignee
+        );
+        if (!log) {
+          log = await userRepository.createDailyTaskLog(
+            created_by,
+            assignee,
+            dailytaskTime,
+            project_id ?? undefined
+          );
+        }
+        if (log?.dataValues?.locked) {
+          throw new Error("Daily log is locked. Cannot add new task.");
+        }
+        subLog = log;
+      }
+
+      // Last by default. Without this the row takes the column's 0 default and
+      // sorts above every existing child — and on a sequential parent it
+      // becomes the one subtask allowed to start, ahead of work already
+      // underway. An explicit position still wins, for a client that inserts
+      // in the middle.
+      const position =
+        data.position !== undefined && data.position !== null
+          ? Number(data.position)
+          : ((await userRepository.maxChildPosition(parent_id)) ?? 0) + 1;
+
+      const created = await userRepository.createNewTask({
+        dailyTaskLog: subLog,
+        project_id: project_id ?? undefined,
+        description,
+        priority: priority as string,
+        start_date: start_date ?? undefined,
+        due_date: due_date ?? undefined,
+        status: "yet_to_start",
+        parent_id,
+        room_id,
+        // Falls back to the parent's tags, matching what subtasks[] does on
+        // create: a subtask with no tags of its own inherits the parent's.
+        tags: data.tags !== undefined ? normalizeTags(data.tags) : (parent as any).tags,
+        position,
+      });
+
+      // Section 6, event 1: "a subtask is assigned to you". After the write,
+      // so a notification failure cannot leave a half-created subtask behind.
+      if (assignee) {
+        const [actor] = created_by
+          ? await userRepository.findUsersLite([created_by])
+          : [];
+        await taskNotifications.subtaskAssigned({
+          assignee_id: assignee,
+          actor_id: created_by,
+          actor_name: (actor as any)?.fullName ?? null,
+          subtask_description: description,
+          parent_description: (parent as any).description,
+          parent_id,
+          position,
+          sequential: (parent as any).sequential === true,
+        });
+      }
+
+      // The decorated PARENT, not the new child: the list view redraws the
+      // whole expanded row, and the child on its own would not carry the
+      // siblings' new order or the parent's rolled-up status.
+      const parentView = await userRepository.findTaskWithSubtasks(parent_id);
+      if (!parentView) return created;
+      const authors = await commentAuthorsFor([parentView]);
+      return decorateTask(parentView, authors);
+    } catch (error) {
+      console.error("Error in addSubtask:", error);
       throw error;
     }
   }

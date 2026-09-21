@@ -332,6 +332,25 @@ export class WorkspaceService {
     };
   }
 
+  // Is this workspace the caller's business at all? The LIST's claim rule
+  // (see listWorkspaces) expressed for a single workspace, so the two cannot
+  // drift: a workspace missing from the sidebar must also 404 by id.
+  //
+  // Deliberately not `visibility`-aware. Public decides whether a claim needs
+  // the key; it never creates one.
+  private async hasClaim(
+    callerId: string,
+    callerRole: string | undefined,
+    workspace: { id: string; created_by: string | null }
+  ): Promise<boolean> {
+    if (callerRole === Role.SuperAdmin) return true;
+    if (workspace.created_by === callerId) return true;
+    const memberOf = await workspaceRepository.workspaceIdsWithMembership(
+      callerId
+    );
+    return memberOf.includes(workspace.id);
+  }
+
   private lockedStub(workspace: {
     id: string;
     name: string;
@@ -392,19 +411,31 @@ export class WorkspaceService {
   // business". Filtering by claim collapses that — **a stub in this response
   // now always means "yours, not yet unlocked"**.
   //
-  // A caller has a claim on a workspace when any of these holds:
+  // A caller has a claim on a workspace when either of these holds:
   //
   //   * they created it
-  //   * it is public
   //   * they have a room_members row in it (any status — see
   //     workspaceIdsWithMembership for why not just active)
-  //   * they have unlocked it this session
   //
-  // SP is exempt from the filter and sees everything.
+  // SP is exempt from the filter and sees everything. So, per role:
   //
-  // Note this is a LIST rule only. GET /workspaces?id= still returns the stub
-  // to anyone who asks for a real id, because a pasted URL has to reach the key
-  // prompt — a stranger there is the case the lock screen exists for.
+  //   SP              every workspace
+  //   AM              every workspace they created
+  //   USER/DEVLOPER   only workspaces they are a member of a room in
+  //
+  // PUBLIC NO LONGER GRANTS A CLAIM. It used to, which is what put a workspace
+  // in the sidebar of a developer assigned to none of its rooms: the rooms were
+  // scoped correctly and his card read "No rooms", but the workspace row itself
+  // went to everyone. `visibility` decides whether a claim needs the key, not
+  // whether there is a claim — the two questions below stay separate, one of
+  // them just stopped answering the other.
+  //
+  // Nor does a session unlock. Typing the key leaves a `room_members` row
+  // behind (pending until approved), and that row is the claim; the unlock on
+  // its own is not one.
+  //
+  // The same rule now applies to GET /workspaces?id=, so the URL is not
+  // reachable by hand for someone who was only meant to lose the sidebar entry.
   public async listWorkspaces(
     callerId: string,
     callerRole?: string,
@@ -443,12 +474,11 @@ export class WorkspaceService {
           const unlockedThisSession = unlocked.includes(row.id);
 
           // ── The claim ──
-          if (
-            !isCreator &&
-            !isPublic &&
-            !hasMembership &&
-            !unlockedThisSession
-          ) {
+          //
+          // Created it, or has a membership row in it. Nothing else — a
+          // non-member does not learn the workspace exists, not as a row and
+          // not as a stub.
+          if (!isCreator && !hasMembership) {
             return null;
           }
 
@@ -487,14 +517,24 @@ export class WorkspaceService {
   ) {
     try {
       if (!id) throw new Error("Workspace id is required");
-      // Two reads: the bare row decides the caller's rights, then the scoped
-      // read embeds only the rooms those rights allow.
+      // Three steps: the bare row, the CLAIM, then the caller's rights.
       //
-      // A workspace that does not exist is still a 404. Only a private one the
-      // caller may not read returns the stub — the lock screen is reached with
-      // a real id, whether clicked or pasted.
+      // A workspace that does not exist is a 404 — and so, now, is one the
+      // caller has no claim on. This route used to hand the locked stub to
+      // anyone who asked with a real id, on the grounds that a pasted URL has
+      // to reach the key prompt. It made the list filter pointless: someone
+      // meant to lose the sidebar entry could still reach the workspace by
+      // hand, and the stub told them its name.
+      //
+      // The stub survives for the case it was built for — a MEMBER of a
+      // private workspace who has not typed the code yet. Joining from outside
+      // goes through POST /workspaces/join with the key, which needs no stub.
       const raw = await workspaceRepository.findRaw(id);
       if (!raw) throw new Error(NOT_FOUND);
+
+      if (!(await this.hasClaim(callerId, callerRole, raw))) {
+        throw new Error(NOT_FOUND);
+      }
 
       const viewer = await this.resolveViewer(callerId, callerRole, raw, sid);
       if (!viewer) return this.lockedStub(raw);
