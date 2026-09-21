@@ -74,26 +74,49 @@ export class WorkspaceController {
       const callerId = req.user?.id as string;
       const id = req.query.id as string | undefined;
 
-      const data = id
-        ? await workspaceService.getWorkspace(
-            callerId,
-            req.user?.role,
-            id,
-            req.user?.sid
-          )
-        : await workspaceService.listWorkspaces(
-            callerId,
-            req.user?.role,
-            req.user?.sid
-          );
+      if (id) {
+        const data = await workspaceService.getWorkspace(
+          callerId,
+          req.user?.role,
+          id,
+          req.user?.sid
+        );
+        const locked = (data as any)?.locked === true;
+        sendResponse(res, HTTP_statusCode.OK, {
+          success: true,
+          message: locked
+            ? "workspace is private"
+            : "Workspaces fetched successfully",
+          data,
+        });
+        return;
+      }
 
-  
-      const locked = !Array.isArray(data) && (data as any)?.locked === true;
+      // `page` / `limit` are passed through only when the caller actually sends
+      // them; absent means "everything", which is how this endpoint behaved
+      // before it could page. Anything else on the query string — a cache
+      // buster like `_t`, say — is ignored.
+      const { page, limit } = req.query;
+      const result = await workspaceService.listWorkspaces(
+        callerId,
+        req.user?.role,
+        req.user?.sid,
+        {
+          page: page === undefined ? undefined : Number(page),
+          limit: limit === undefined ? undefined : Number(limit),
+        }
+      );
 
+      // `data` stays an array at the same key it has always been; the counts
+      // sit beside it, as on /task-list.
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
-        message: locked ? "workspace is private" : "Workspaces fetched successfully",
-        data,
+        message: "Workspaces fetched successfully",
+        data: result.data,
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+        totalPages: result.totalPages,
       });
     } catch (error: any) {
       const message = publicMessage(error);

@@ -22,6 +22,47 @@ import {
 const workspaceRepository = new WorkspaceRepository();
 const notificationRepo = new NotificationRepository();
 
+// One page of GET /role-user/workspaces. `data` is what the endpoint has always
+// returned, at the same key, so an unpaginated caller sees no difference.
+export interface WorkspaceListPage {
+  data: any[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+// The list pages only when ASKED to. Sending neither `page` nor `limit` returns
+// everything, because this endpoint returned everything before pagination
+// existed and a screen that never asked for ten rows must not start getting
+// ten rows.
+//
+// Both are coerced rather than validated into a 400: `?page=abc` from a stale
+// link is not worth failing a sidebar over, and falling back to the first page
+// is the answer the caller wanted anyway. The cap is what stops `limit=100000`
+// from being a way to ask for the whole table one request at a time.
+const MAX_WORKSPACE_PAGE_SIZE = 100;
+const DEFAULT_WORKSPACE_PAGE_SIZE = 10;
+
+const normalizePaging = (paging?: { page?: number; limit?: number }) => {
+  const rawPage = paging?.page;
+  const rawLimit = paging?.limit;
+  const paginated =
+    (rawPage !== undefined && rawPage !== null) ||
+    (rawLimit !== undefined && rawLimit !== null);
+
+  const page =
+    Number.isFinite(Number(rawPage)) && Number(rawPage) >= 1
+      ? Math.floor(Number(rawPage))
+      : 1;
+  const limit =
+    Number.isFinite(Number(rawLimit)) && Number(rawLimit) >= 1
+      ? Math.min(Math.floor(Number(rawLimit)), MAX_WORKSPACE_PAGE_SIZE)
+      : DEFAULT_WORKSPACE_PAGE_SIZE;
+
+  return { page, limit, paginated };
+};
+
 // 10 join attempts per user per 5 minutes. A correct key is not counted (see
 // RateLimiter.forget), so this only ever bites someone guessing.
 const joinLimiter = new RateLimiter(10, 5 * 60 * 1000);
@@ -439,48 +480,70 @@ export class WorkspaceService {
   public async listWorkspaces(
     callerId: string,
     callerRole?: string,
-    sid?: string
-  ) {
+    sid?: string,
+    paging?: { page?: number; limit?: number }
+  ): Promise<WorkspaceListPage> {
     try {
       const isSP = callerRole === Role.SuperAdmin;
-      const rows = await workspaceRepository.list({});
 
-      if (isSP) {
-        return await Promise.all(
-          rows.map((row: any) =>
-            workspaceRepository.decorateListRow(row, {
-              userId: callerId,
-              role: callerRole,
-              canManage: true,
-            })
-          )
-        );
-      }
-
-      // Three lookups for the whole list rather than per row.
+      // Two lookups the whole page shares rather than one per row. memberOf is
+      // needed even for the SQL claim below, so it is fetched for everyone but
+      // SP, who has no claim filter to build.
       const [roomIds, unlocked, memberOf] = await Promise.all([
-        workspaceRepository.roomIdsForUser(callerId),
-        sid
+        isSP ? Promise.resolve([]) : workspaceRepository.roomIdsForUser(callerId),
+        !isSP && sid
           ? workspaceRepository.unlockedWorkspaceIds(sid, callerId)
           : Promise.resolve([]),
-        workspaceRepository.workspaceIdsWithMembership(callerId),
+        isSP
+          ? Promise.resolve([])
+          : workspaceRepository.workspaceIdsWithMembership(callerId),
       ]);
 
-      const decorated = await Promise.all(
-        rows.map(async (row: any) => {
-          const isCreator = row.created_by === callerId;
-          const isPublic = row.visibility === "public";
-          const hasMembership = memberOf.includes(row.id);
-          const unlockedThisSession = unlocked.includes(row.id);
+      // ── The claim, in SQL ──
+      //
+      // The same rule hasClaim applies to one workspace: created it, or has a
+      // membership row in it. It moved into the WHERE because the list is now
+      // paginated, and a claim filter applied in JS AFTER the page is read
+      // gives short pages and a total that counts workspaces the caller may
+      // not see. Expressible as SQL only because Round 10 removed `public` and
+      // the session unlock from the claim — neither is a column.
+      const claimWhere: any = isSP
+        ? {}
+        : {
+            [Op.or]: [
+              { created_by: callerId },
+              { id: { [Op.in]: memberOf } },
+            ],
+          };
 
-          // ── The claim ──
-          //
-          // Created it, or has a membership row in it. Nothing else — a
-          // non-member does not learn the workspace exists, not as a row and
-          // not as a stub.
-          if (!isCreator && !hasMembership) {
-            return null;
-          }
+      const { page, limit, paginated } = normalizePaging(paging);
+
+      let rows: any[];
+      let total: number;
+
+      if (paginated) {
+        const pageIds = await workspaceRepository.listPageIds(
+          claimWhere,
+          page,
+          limit
+        );
+        total = pageIds.total;
+        rows = pageIds.ids.length
+          ? await workspaceRepository.list({ id: { [Op.in]: pageIds.ids } })
+          : [];
+      } else {
+        // Neither page nor limit sent: everything, exactly as this endpoint
+        // behaved before pagination existed. A caller that never asked to be
+        // paginated must not silently start receiving ten rows.
+        rows = await workspaceRepository.list(claimWhere);
+        total = rows.length;
+      }
+
+      const data = await Promise.all(
+        rows.map(async (row: any) => {
+          const isCreator = row.created_by === callerId || isSP;
+          const isPublic = row.visibility === "public";
+          const unlockedThisSession = unlocked.includes(row.id);
 
           // ── The lock ──
           //
@@ -488,6 +551,10 @@ export class WorkspaceService {
           // a private workspace (Round 7). So a member with a claim but no
           // session unlock gets the stub — which is exactly the
           // "yours, not yet unlocked" the sidebar needs.
+          //
+          // The claim is no longer re-checked here; the WHERE above is the one
+          // place it is decided. A stub still costs a page slot, which is
+          // correct: it is a row the sidebar draws.
           if (!isCreator && !isPublic && !unlockedThisSession) {
             return this.lockedStub(row);
           }
@@ -496,14 +563,20 @@ export class WorkspaceService {
             userId: callerId,
             role: callerRole,
             canManage: isCreator,
-            // A creator sees every room of their own workspace; everyone else
-            // sees only the rooms they are in.
+            // A creator (and SP) sees every room of the workspace; everyone
+            // else sees only the rooms they are in.
             visibleRoomIds: isCreator ? undefined : roomIds,
           });
         })
       );
 
-      return decorated.filter((row) => row !== null);
+      return {
+        data,
+        total,
+        page,
+        limit: paginated ? limit : total,
+        totalPages: paginated ? Math.max(1, Math.ceil(total / limit)) : 1,
+      };
     } catch (error) {
       throw error;
     }

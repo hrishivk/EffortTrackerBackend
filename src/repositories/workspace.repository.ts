@@ -378,6 +378,37 @@ export class WorkspaceRepository {
     }
   }
 
+  // The ids of one page of workspaces, plus the total behind it.
+  //
+  // Two steps rather than a LIMIT on list() itself: list() joins `rooms`, a
+  // hasMany, and a LIMIT over a row-multiplying join either truncates a
+  // workspace's rooms or counts one workspace several times, depending on how
+  // Sequelize decides to build the subquery. Paging over bare ids cannot do
+  // either, and the second read is by primary key.
+  //
+  // `where` is the SAME claim predicate the list applies, so `total` counts
+  // what the caller may actually see — a count of every workspace in the
+  // organisation would make the page count wrong for everybody but SP.
+  public async listPageIds(
+    where: any,
+    page: number,
+    limit: number
+  ): Promise<{ ids: string[]; total: number }> {
+    try {
+      const { count, rows } = await Workspace.findAndCountAll({
+        where,
+        attributes: ["id"],
+        order: [["created_at", "DESC"]],
+        offset: (page - 1) * limit,
+        limit,
+        raw: true,
+      });
+      return { ids: rows.map((row: any) => row.id), total: count };
+    } catch (error) {
+      throw error;
+    }
+  }
+
   // Decorates one already-fetched list row. Split out from list() because the
   // service now decides per row whether the caller gets the row at all or a
   // locked stub, and only the readable ones are worth the counts.
