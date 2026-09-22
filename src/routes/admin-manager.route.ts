@@ -17,6 +17,13 @@ export class amRoute {
     this.router.get("/list-domains", roleGuards.AdminOrSuperAdmin, this.spController.fetchDomain);
     this.router.delete("/domain", roleGuards.AdminOrSuperAdmin, this.spController.deleteDomain);
 
+    // The by-id project read, mounted here too so /role-am mirrors /role-sp.
+    // Same controller, same guard, same per-project visibility rule inside —
+    // an AM calling either path gets identical results. The alias exists so the
+    // client does not have to special-case its base path for one endpoint.
+    this.router.get("/project", roleGuards.AdminOrSuperAdmin, this.spController.fetchProject);
+    this.router.patch("/project", roleGuards.AdminOrSuperAdmin, this.spController.patchProject);
+
     // Team leave history (AM only)
     this.router.get("/leave/team-leaves/export", roleGuards.Admin, this.controller.exportTeamLeaves);
     this.router.get("/leave/team-leaves", roleGuards.Admin, this.controller.getTeamLeaves);

@@ -24,6 +24,9 @@ export class SuperAdminRoute {
     this.router.get("/project-stats", roleGuards.AdminOrSuperAdmin, this.controller.projectStats);
     this.router.get("/project", roleGuards.AdminOrSuperAdmin, this.controller.fetchProject);
     this.router.post("/project", roleGuards.AdminOrSuperAdmin, this.controller.upsertProject);
+    // The edit modal's save. POST /project is the wizard's create-or-replace and
+    // requires name + domain_id every time; this one writes only the keys sent.
+    this.router.patch("/project", roleGuards.AdminOrSuperAdmin, this.controller.patchProject);
     this.router.patch("/project-status", roleGuards.AdminOrSuperAdmin, this.controller.updateProjectStatus);
     this.router.delete("/project", roleGuards.AdminOrSuperAdmin, this.controller.deleteProject);
     this.router.get("/project-domain", roleGuards.AdminOrSuperAdmin, this.controller.fetchDomainProject);

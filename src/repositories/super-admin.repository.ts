@@ -427,7 +427,10 @@ export class superAdminRepository {
           {
             model: User,
             as: "members",
-            attributes: ["id", "fullName"],
+            // email and role are here for the edit form's member list, which
+            // used to be built by fetching the WHOLE user roster and filtering
+            // each user's projects[] array client-side. One join replaces that.
+            attributes: ["id", "fullName", "email", "role"],
             through: { attributes: [] },
             where: { role: { [Op.ne]: "SP" } },
             required: false,
@@ -1077,6 +1080,28 @@ export class superAdminRepository {
   public async findProjectById(id: string) {
     try {
       return await Project.findByPk(id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // findProjectById, but through the same visibility rule the detail READ
+  // applies. Returns null for a project this caller has no claim on, so a
+  // write can answer "not found" for it exactly as the read does rather than
+  // confirming it exists by refusing differently.
+  //
+  // Bare row, no includes: this backs the permission check before an update,
+  // where only the row's own columns matter.
+  public async findProjectVisibleById(
+    id: string,
+    userId?: string,
+    userRole?: string,
+  ) {
+    try {
+      const visibility = await this.buildProjectVisibilityWhere(userId, userRole);
+      const clauses: any[] = [{ id }];
+      if (visibility) clauses.push(visibility);
+      return await Project.findOne({ where: { [Op.and]: clauses } });
     } catch (error) {
       throw error;
     }

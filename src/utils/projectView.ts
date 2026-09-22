@@ -46,6 +46,26 @@ export const toProjectDetailView = (
 
   return {
     ...toProjectView(plain, tasks),
+
+    // The full member rows, for the edit form's member picker. `teamAssigned`
+    // above stays exactly as it was — it is the table's avatar strip and wants
+    // {id, name, avatar}, which is a different shape for a different job.
+    //
+    // This is what removes the roster scan: the picker used to fetch every user
+    // in the organisation and keep the ones whose projects[] contained this id.
+    // SP accounts are excluded by the query, not here.
+    members: (plain.members || []).map((m: any) => ({
+      id: m.id,
+      fullName: m.fullName,
+      email: m.email ?? null,
+      role: m.role ?? null,
+    })),
+
+    // Audit fields. Not on toProjectView because the table draws neither, but
+    // the detail screen can show "created by X on Y".
+    created_by: plain.created_by ?? null,
+    created_at: plain.created_at ?? plain.createdAt ?? null,
+
     editValues: {
       id: plain.id,
       name: plain.name,

@@ -13,8 +13,16 @@ import {
 } from "../utils/userValidation";
 import { UserRepository } from "../repositories/user.repository";
 import { DomainUpsertDTO } from "../types/domain.types";
-import { ProjectUpsertDTO } from "../types/project.types";
+import { ProjectPatchDTO, ProjectUpsertDTO } from "../types/project.types";
 import { sendWelcomeEmail } from "../utils/mailer";
+
+// A date input that was cleared arrives as "" and must reach a nullable DATE
+// column as null — "" is not a date, and the driver would reject it.
+const emptyToNull = (value: unknown): string | null => {
+  if (value === null || value === undefined) return null;
+  const trimmed = String(value).trim();
+  return trimmed === "" ? null : trimmed;
+};
 
 const SuperAdminRepository = new superAdminRepository();
 const userRepository = new UserRepository();
@@ -774,6 +782,123 @@ export class superAdminService {
       }
 
       return project;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // PATCH /role-sp/project?id=<id> — the edit modal's save.
+  //
+  // Separate from upsertProject rather than folded into it. That one is the
+  // wizard's create-or-replace and requires `name` and `domain_id` on every
+  // call; this one leaves out what the caller leaves out, which is what a
+  // modal that sends only the changed fields needs.
+  //
+  // Unlike POST /project it enforces the SAME per-project visibility as
+  // GET /project?id=. A new write route with no authorization would be
+  // shipping a known hole knowingly; POST is untouched, so nothing regresses.
+  public async patchProject(
+    id: string,
+    body: ProjectPatchDTO,
+    userId?: string,
+    userRole?: string,
+  ) {
+    try {
+      if (!id) throw new Error("Project id is required");
+
+      // Reads through the visibility rule, so a project this caller may not
+      // see is "not found" here exactly as it is on the GET.
+      const visible = await SuperAdminRepository.findProjectVisibleById(
+        id,
+        userId,
+        userRole,
+      );
+      if (!visible) throw new Error("Project not found");
+
+      const patch: any = {};
+
+      if (body.name !== undefined) {
+        const name = String(body.name ?? "").trim();
+        if (!name) throw new Error("Project name is required");
+        // Only when it actually changed: re-saving a project under its own
+        // name must not collide with itself.
+        if (name !== visible.name) {
+          const duplicate = await SuperAdminRepository.findProjectByName(
+            name,
+            id,
+          );
+          if (duplicate) {
+            throw new Error("Project with this name already exists");
+          }
+        }
+        patch.name = name;
+      }
+
+      if (body.domain_id !== undefined) {
+        if (!body.domain_id) throw new Error("Domain is required");
+        const domain = await SuperAdminRepository.findDomainById(
+          body.domain_id,
+        );
+        if (!domain) throw new Error("Domain not found");
+        patch.domain_id = body.domain_id;
+      }
+
+      if (body.status !== undefined) {
+        const validStatuses = ["active", "on_hold", "paused", "completed"];
+        if (!validStatuses.includes(String(body.status))) {
+          throw new Error(
+            "Invalid status. Must be: active, on_hold, paused, completed",
+          );
+        }
+        patch.status = body.status;
+      }
+
+      // Nullable text: "" from a cleared input means null, not an empty
+      // string, so the column ends up consistent with what create writes.
+      if (body.description !== undefined) {
+        const value = body.description === null ? null : String(body.description).trim();
+        patch.description = value || null;
+      }
+      if (body.client_department !== undefined) {
+        const value =
+          body.client_department === null
+            ? null
+            : String(body.client_department).trim();
+        patch.client_department = value || null;
+      }
+
+      if (body.start_date !== undefined) {
+        patch.start_date = emptyToNull(body.start_date);
+      }
+      if (body.end_date !== undefined) {
+        patch.end_date = emptyToNull(body.end_date);
+      }
+
+      // Checked against the row as it will be, not as it was: moving only the
+      // start date still has to land before the due date already stored.
+      const effectiveStart =
+        patch.start_date !== undefined ? patch.start_date : visible.start_date;
+      const effectiveEnd =
+        patch.end_date !== undefined ? patch.end_date : visible.end_date;
+      if (
+        effectiveStart &&
+        effectiveEnd &&
+        new Date(effectiveEnd).getTime() < new Date(effectiveStart).getTime()
+      ) {
+        throw new Error("End date cannot be before start date");
+      }
+
+      if (Object.keys(patch).length === 0) {
+        throw new Error(
+          "Nothing to update: send name, description, domain_id, client_department, start_date, end_date or status",
+        );
+      }
+
+      await SuperAdminRepository.updateProject(id, patch);
+
+      // The same read GET /project?id= returns, so the modal can close on the
+      // response instead of refetching the list to see its own edit.
+      return await SuperAdminRepository.findProjectDetail(id, userId, userRole);
     } catch (error) {
       throw error;
     }

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { userService } from "../service/user.service";
 import HTTP_statusCode from "../Enums/statuCode";
+import { ProjectPatchDTO } from "../types/project.types";
 import { sendResponse } from "../utils/sendResponse";
 import { superAdminService } from "../service/super-admin.service";
 import _ from "lodash";
@@ -222,6 +223,69 @@ export class SuperAdminController {
       });
     }
   }
+  // PATCH /role-sp/project?id=<id> (and the /role-am twin) — the edit modal's
+  // save. A partial update: only the keys present in the body are written.
+  //
+  // The id is read from the query string, where the client puts it, with the
+  // body as a fallback so both spellings work.
+  public async patchProject(req: Request, res: Response) {
+    try {
+      const id = (req.query.id as string) || req.body?.id;
+      if (!id) {
+        sendResponse(res, HTTP_statusCode.BadRequest, {
+          success: false,
+          message: "Project id is required",
+        });
+        return;
+      }
+      const body = req.body ?? {};
+      const patch: ProjectPatchDTO = {};
+      // Key-presence, not truthiness: "" clears a nullable column and null
+      // clears a date, and `if (body.end_date)` would drop both.
+      if ("name" in body) patch.name = body.name;
+      if ("description" in body) patch.description = body.description;
+      if ("domain_id" in body) patch.domain_id = body.domain_id;
+      if ("client_department" in body)
+        patch.client_department = body.client_department;
+      if ("start_date" in body) patch.start_date = body.start_date;
+      if ("end_date" in body) patch.end_date = body.end_date;
+      if ("status" in body) patch.status = body.status;
+
+      const data = await SuperAdminService.patchProject(
+        id,
+        patch,
+        req.user?.id,
+        req.user?.role,
+      );
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "Project updated successfully",
+        data,
+      });
+    } catch (error: any) {
+      const message = String(error.message ?? "");
+      const statusMap: Record<string, number> = {
+        "Project not found": HTTP_statusCode.NotFound,
+        "Domain not found": HTTP_statusCode.NotFound,
+        "Project with this name already exists": HTTP_statusCode.Conflict,
+      };
+      const statusCode =
+        statusMap[message] ||
+        (message.startsWith("Nothing to update") ||
+        message.startsWith("Invalid status") ||
+        message === "Project id is required" ||
+        message === "Project name is required" ||
+        message === "Domain is required" ||
+        message === "End date cannot be before start date"
+          ? HTTP_statusCode.BadRequest
+          : HTTP_statusCode.InternalServerError);
+      sendResponse(res, statusCode, {
+        success: false,
+        message: message || "Updating project failed",
+      });
+    }
+  }
+
   public async upsertProject(req: Request, res: Response) {
     try {
       const { id, name, description, domain_id, client_department, start_date, end_date, status } = req.body;
