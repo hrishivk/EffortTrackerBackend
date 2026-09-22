@@ -71,6 +71,7 @@ export class LeaveRepository {
           });
         }
       } else if (manager_id) {
+        
         await notificationRepo.create({
           user_id: manager_id,
           type: "leave_applied",
