@@ -26,6 +26,10 @@ export class UserRoute {
     // room board "anyone who can see it" must not mean "anyone can destroy it".
     this.router.delete("/task", roleGuards.allAcess, this.controller.deleteTask);
 
+    // Push a task's deadline, with a required reason, recorded as an event
+    // rather than a silent edit of due_date. See UserService.extendTask.
+    this.router.post("/task/extend", roleGuards.allAcess, this.controller.extendTask);
+
     // Task comments — on the tasks row, not a table of their own. A subtask is
     // already a row in tasks, so one column covers the main task and any
     // subtask alike.

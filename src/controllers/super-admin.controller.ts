@@ -250,6 +250,8 @@ export class SuperAdminController {
       if ("start_date" in body) patch.start_date = body.start_date;
       if ("end_date" in body) patch.end_date = body.end_date;
       if ("status" in body) patch.status = body.status;
+      if ("extension_reason" in body)
+        patch.extension_reason = body.extension_reason;
 
       const data = await SuperAdminService.patchProject(
         id,
@@ -270,7 +272,10 @@ export class SuperAdminController {
         "Project with this name already exists": HTTP_statusCode.Conflict,
       };
       const statusCode =
-        statusMap[message] ||
+        // A push with no reason, and anything else the activity log rejects.
+        error.name === "ProjectValidationError"
+          ? HTTP_statusCode.BadRequest
+          : statusMap[message] ||
         (message.startsWith("Nothing to update") ||
         message.startsWith("Invalid status") ||
         message === "Project id is required" ||
@@ -337,7 +342,7 @@ export class SuperAdminController {
     try {
       const { id } = req.query;
       const { status } = req.body;
-      const data = await SuperAdminService.updateProjectStatus(id as string, status);
+      const data = await SuperAdminService.updateProjectStatus(id as string, status, req.user?.id);
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "Project status updated successfully",
@@ -660,7 +665,7 @@ export class SuperAdminController {
         finalUserIds.push(callerId);
       }
 
-      const data = await SuperAdminService.assignProjectMembers(project_id, finalUserIds);
+      const data = await SuperAdminService.assignProjectMembers(project_id, finalUserIds, callerId);
       if (callerRole === "AM" && callerId) {
         await SuperAdminService.assignProjectDomainToUser(project_id, callerId);
       }
@@ -686,7 +691,7 @@ export class SuperAdminController {
   public async removeMembers(req: Request, res: Response) {
     try {
       const { project_id, user_ids } = req.body;
-      const data = await SuperAdminService.removeProjectMembers(project_id, user_ids);
+      const data = await SuperAdminService.removeProjectMembers(project_id, user_ids, req.user?.id);
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "Members removed successfully",

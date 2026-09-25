@@ -14,6 +14,7 @@ import initWorkspaceModel, { Workspace } from "../models/workspace";
 import initRoomModel, { Room } from "../models/room";
 import initRoomMemberModel, { RoomMember } from "../models/room_member";
 import initWorkspaceUnlockModel, { WorkspaceUnlock } from "../models/workspace_unlock";
+import initTaskExtensionModel, { TaskExtension } from "../models/task_extension";
 import { Sequelize } from "sequelize";
 
 export class Associations {
@@ -171,6 +172,30 @@ export class Associations {
       foreignKey: "parent_id",
       as: "parent",
       onDelete: "CASCADE",
+    });
+
+    // Task <-> TaskExtension — the recorded deadline pushes of one task.
+    //
+    // CASCADE: the history of a deleted task has nothing to hang from, and a
+    // subtask's own extensions go when the subtask does.
+    Task.hasMany(TaskExtension, {
+      foreignKey: "task_id",
+      as: "extensions",
+      onDelete: "CASCADE",
+    });
+    TaskExtension.belongsTo(Task, {
+      foreignKey: "task_id",
+      as: "task",
+      onDelete: "CASCADE",
+    });
+
+    // Who pushed it. No onDelete rule and no FK on the column: the row must
+    // survive the user, so this association exists only to resolve the name on
+    // read. A deleted extender leaves `extendedBy: null`, not a missing row.
+    TaskExtension.belongsTo(User, {
+      foreignKey: "extended_by",
+      as: "extendedBy",
+      constraints: false,
     });
 
     // Task <-> TaskGroup
@@ -406,5 +431,6 @@ export class Associations {
     initRoomModel(sequelize);
     initRoomMemberModel(sequelize);
     initWorkspaceUnlockModel(sequelize);
+    initTaskExtensionModel(sequelize);
   }
 }

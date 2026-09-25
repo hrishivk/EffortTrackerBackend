@@ -11,6 +11,9 @@ export interface ProjectAttributes {
   end_date?: Date | null;
   status: "active" | "on_hold" | "paused" | "completed";
   progress: number;
+  // Append-only history. Typed loosely here because the column is written by
+  // raw SQL, never through the model — see appendProjectActivity.
+  activity?: any[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -27,6 +30,7 @@ export type ProjectInput = Optional<
   | "end_date"
   | "status"
   | "progress"
+  | "activity"
   | "createdAt"
   | "updatedAt"
 >;
@@ -62,4 +66,39 @@ export interface ProjectPatchDTO {
   start_date?: string | null;
   end_date?: string | null;
   status?: string;
+  // Not a column. Required when `end_date` moves LATER, and recorded as the
+  // `reason` on the resulting `extended` activity entry — the same rule
+  // POST /role-user/task/extend applies to tasks.
+  extension_reason?: string;
+}
+
+// ── Project activity log ────────────────────────────────────────────────────
+
+// One entry in projects.activity. See 023_project_activity.sql for why this is
+// a JSONB column rather than a table like task_extensions.
+export type ProjectActivityAction =
+  | "created"
+  | "extended"
+  | "due_date_changed"
+  | "status_changed"
+  | "renamed"
+  | "updated"
+  | "member_added"
+  | "member_removed";
+
+export interface ProjectActivityEntry {
+  id: string;
+  action: ProjectActivityAction;
+  // The column that moved. Null on `created`, where nothing moved, and the
+  // user id on the two member actions.
+  field: string | null;
+  old_value: string | null;
+  new_value: string | null;
+  // Required on `extended`, null everywhere else — same rule tasks follow.
+  reason: string | null;
+  // Snapshot of the actor's name at write time, so an entry still reads
+  // correctly after the user is deleted. Live names win on read.
+  actor_id: string | null;
+  actor_name: string | null;
+  created_at: string;
 }

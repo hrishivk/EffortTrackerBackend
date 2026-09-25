@@ -75,6 +75,50 @@ const decorateComments = (json: any, authors: Map<string, UserLite>): any => {
   return json;
 };
 
+// The deadline history of one task: oldest first, with a flat count beside it.
+//
+// The query already orders by created_at, but a task decorated from a row that
+// was fetched some other way (a re-read after a write, say) must not come back
+// in whatever order the driver returned — the panel renders this as a
+// chronological log, so the order IS the meaning.
+//
+// `extension_count` is the TRUE length, unlike comment_count there is no page
+// cap here: a task that has slipped more than a handful of times is the whole
+// thing a manager wants to see, so truncating it would hide the finding.
+//
+// Absent (a read that did not include them) leaves BOTH keys off rather than
+// setting `extensions: []`, which a client holding a real list would read as
+// "they were all deleted" — the same rule capComments follows for subtasks.
+const decorateExtensions = (json: any): any => {
+  if (!Array.isArray(json.extensions)) return json;
+  const rows = [...json.extensions].map((e: any) =>
+    e && typeof e.toJSON === "function" ? e.toJSON() : { ...e }
+  );
+  rows.sort(
+    (a, b) =>
+      new Date(a.created_at ?? 0).getTime() -
+      new Date(b.created_at ?? 0).getTime()
+  );
+  json.extensions = rows.map((e: any) => ({
+    id: e.id,
+    previous_due_date: e.previous_due_date ?? null,
+    new_due_date: e.new_due_date,
+    reason: e.reason,
+    created_at: e.created_at,
+    extended_by: e.extended_by ?? null,
+    // Null for a user who has since been deleted — the row outlives them.
+    extendedBy: e.extendedBy
+      ? {
+          id: e.extendedBy.id,
+          fullName: e.extendedBy.fullName,
+          email: e.extendedBy.email,
+        }
+      : null,
+  }));
+  json.extension_count = rows.length;
+  return json;
+};
+
 // Ascending by position, created_at as the tie-break. The tie-break matters for
 // every subtask created before migration 018 ran: those all sit on position 0
 // until its backfill, and without it they would come back in an arbitrary
@@ -153,10 +197,12 @@ export const decorateTask = (
   row: any,
   authors: Map<string, UserLite> = new Map()
 ): any => {
-  const json = decorateComments(liftAssignee(toPlain(row)), authors);
+  const json = decorateExtensions(
+    decorateComments(liftAssignee(toPlain(row)), authors)
+  );
 
   const children = (json.subtasks ?? []).map((child: any) =>
-    decorateComments(liftAssignee(toPlain(child)), authors)
+    decorateExtensions(decorateComments(liftAssignee(toPlain(child)), authors))
   );
   const ordered = orderChildren(children);
   applyBlocking(json, ordered);
@@ -180,7 +226,7 @@ export const decorateTask = (
 export const capComments = (
   row: any,
   authors: Map<string, UserLite> = new Map()
-): any => decorateComments(toPlain(row), authors);
+): any => decorateExtensions(decorateComments(toPlain(row), authors));
 
 export const decorateTasks = (
   rows: any[],

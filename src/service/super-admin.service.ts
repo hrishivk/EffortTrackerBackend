@@ -13,8 +13,57 @@ import {
 } from "../utils/userValidation";
 import { UserRepository } from "../repositories/user.repository";
 import { DomainUpsertDTO } from "../types/domain.types";
-import { ProjectPatchDTO, ProjectUpsertDTO } from "../types/project.types";
+import {
+  ProjectActivityAction,
+  ProjectActivityEntry,
+  ProjectPatchDTO,
+  ProjectUpsertDTO,
+} from "../types/project.types";
 import { sendWelcomeEmail } from "../utils/mailer";
+
+// ── Project activity ────────────────────────────────────────────────────────
+
+// Raised when an end date is pushed out with no reason given. Named so the
+// controller answers 400 without matching on message text, like the task-side
+// validation errors.
+export class ProjectValidationError extends Error {
+  public readonly name = "ProjectValidationError";
+}
+
+const activityId = (): string =>
+  "pa_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+
+// A DATE column read back for comparison. Sequelize hands these back as Date
+// objects or as "YYYY-MM-DD" depending on the column type, so both are reduced
+// to the day — an end date is a day, and comparing timestamps would call a
+// same-day save a change.
+const dayOf = (value: unknown): string | null => {
+  if (value === null || value === undefined || value === "") return null;
+  const raw = value instanceof Date ? value.toISOString() : String(value);
+  return raw.split("T")[0];
+};
+
+const activityEntry = (
+  action: ProjectActivityAction,
+  fields: {
+    field?: string | null;
+    old_value?: string | null;
+    new_value?: string | null;
+    reason?: string | null;
+    actor_id?: string | null;
+    actor_name?: string | null;
+  },
+): ProjectActivityEntry => ({
+  id: activityId(),
+  action,
+  field: fields.field ?? null,
+  old_value: fields.old_value ?? null,
+  new_value: fields.new_value ?? null,
+  reason: fields.reason ?? null,
+  actor_id: fields.actor_id ?? null,
+  actor_name: fields.actor_name ?? null,
+  created_at: new Date().toISOString(),
+});
 
 // A date input that was cleared arrives as "" and must reach a nullable DATE
 // column as null — "" is not a date, and the driver would reject it.
@@ -766,7 +815,19 @@ export class superAdminService {
           }
         }
 
-        return await SuperAdminRepository.updateProject(id, projectData);
+        // The legacy create-or-replace path still edits, so it logs too —
+        // otherwise a save through this route would be a hole in the history,
+        // and an end date pushed out here would escape the reason rule that
+        // PATCH enforces.
+        const entries = await this.buildProjectActivity(
+          existing,
+          projectData,
+          (data as any).extension_reason,
+          created_by,
+        );
+        const updated = await SuperAdminRepository.updateProject(id, projectData);
+        await SuperAdminRepository.appendProjectActivity(id, entries);
+        return updated;
       }
       const existProject = await SuperAdminRepository.findProjectByName(
         name.trim(),
@@ -777,7 +838,18 @@ export class superAdminService {
 
       if (created_by) projectData.created_by = created_by;
       const project = await SuperAdminRepository.createProject(projectData);
+      // The first entry in every project's log, so the Activity panel always
+      // has a beginning rather than starting at the first edit.
+      await SuperAdminRepository.appendProjectActivity(project.id, [
+        activityEntry("created", {
+          actor_id: created_by ?? null,
+          actor_name: await this.actorName(created_by),
+          new_value: projectData.name,
+        }),
+      ]);
       if (created_by) {
+        // The creator's own membership is not logged: it is part of creating
+        // the project, not a later decision about who is on it.
         await SuperAdminRepository.assignMembers(project.id, [created_by]);
       }
 
@@ -894,7 +966,20 @@ export class superAdminService {
         );
       }
 
+      // One activity entry per field that actually MOVED, built against the
+      // stored row before the write. Comparing after the update would find
+      // nothing changed, and comparing against the request would log fields the
+      // form resent unchanged — the log has to say what happened, not what was
+      // submitted.
+      const entries = await this.buildProjectActivity(
+        visible,
+        patch,
+        body.extension_reason,
+        userId,
+      );
+
       await SuperAdminRepository.updateProject(id, patch);
+      await SuperAdminRepository.appendProjectActivity(id, entries);
 
       // The same read GET /project?id= returns, so the modal can close on the
       // response instead of refetching the list to see its own edit.
@@ -904,7 +989,120 @@ export class superAdminService {
     }
   }
 
-  public async updateProjectStatus(id: string, status: string) {
+  // The diff, as activity entries. Also the gate on `extension_reason`, which
+  // is why it runs BEFORE the write: a push with no reason must leave the
+  // project untouched, not logged-but-unexplained.
+  //
+  // Only `end_date` moving LATER is an extension. Pulling it in is a
+  // due_date_changed — a project finishing sooner has not slipped, and counting
+  // it would inflate the number the badge reports. Same rule tasks follow.
+  private async buildProjectActivity(
+    existing: any,
+    patch: any,
+    extension_reason: unknown,
+    actorId?: string,
+  ): Promise<ProjectActivityEntry[]> {
+    const entries: ProjectActivityEntry[] = [];
+    const actor_name = await this.actorName(actorId);
+    const base = { actor_id: actorId ?? null, actor_name };
+
+    if (patch.end_date !== undefined) {
+      const before = dayOf(existing.end_date);
+      const after = dayOf(patch.end_date);
+      if (before !== after) {
+        // Later than before — including a first date set on a project that had
+        // none, which is still a commitment being made and worth a reason.
+        const isExtension = !before || (after !== null && after > before);
+        if (isExtension) {
+          const reason = String(extension_reason ?? "").trim();
+          if (!reason) {
+            throw new ProjectValidationError(
+              "extension_reason is required when the end date moves later",
+            );
+          }
+          entries.push(
+            activityEntry("extended", {
+              ...base,
+              field: "end_date",
+              old_value: before,
+              new_value: after,
+              reason,
+            }),
+          );
+        } else {
+          entries.push(
+            activityEntry("due_date_changed", {
+              ...base,
+              field: "end_date",
+              old_value: before,
+              new_value: after,
+            }),
+          );
+        }
+      }
+    }
+
+    if (patch.status !== undefined && patch.status !== existing.status) {
+      entries.push(
+        activityEntry("status_changed", {
+          ...base,
+          field: "status",
+          old_value: existing.status ?? null,
+          new_value: patch.status,
+        }),
+      );
+    }
+
+    if (patch.name !== undefined && patch.name !== existing.name) {
+      entries.push(
+        activityEntry("renamed", {
+          ...base,
+          field: "name",
+          old_value: existing.name ?? null,
+          new_value: patch.name,
+        }),
+      );
+    }
+
+    // Everything else is one `updated` row each, so the panel can say which
+    // field moved without the log needing an action name per column.
+    const plain: Array<[string, (row: any) => string | null]> = [
+      ["description", (row) => row.description ?? null],
+      ["domain_id", (row) => row.domain_id ?? null],
+      ["client_department", (row) => row.client_department ?? null],
+      ["start_date", (row) => dayOf(row.start_date)],
+    ];
+    for (const [field, read] of plain) {
+      if (patch[field] === undefined) continue;
+      const before = read(existing);
+      const after = field === "start_date" ? dayOf(patch[field]) : patch[field] ?? null;
+      if (before === after) continue;
+      entries.push(
+        activityEntry("updated", {
+          ...base,
+          field,
+          old_value: before,
+          new_value: after,
+        }),
+      );
+    }
+
+    return entries;
+  }
+
+  // The actor's name, snapshotted onto the entry so it still reads correctly
+  // after the user is deleted. Live names still win on read.
+  private async actorName(actorId?: string): Promise<string | null> {
+    if (!actorId) return null;
+    try {
+      const [user]: any = await userRepository.findUsersLite([actorId]);
+      return user?.fullName ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  public async updateProjectStatus(id: string, status: string, actorId?: string) {
     try {
       if (!id) throw new Error("Project id is required");
       if (!status) throw new Error("Status is required");
@@ -914,10 +1112,24 @@ export class superAdminService {
           "Invalid status. Must be: active, on_hold, paused, completed",
         );
       }
-      return await SuperAdminRepository.updateProjectStatus(
+      // Read first: the old value is gone the moment the update lands.
+      const before = await SuperAdminRepository.findProjectById(id);
+      const updated = await SuperAdminRepository.updateProjectStatus(
         id,
         status as "active" | "on_hold" | "paused" | "completed",
       );
+      if (before && before.status !== status) {
+        await SuperAdminRepository.appendProjectActivity(id, [
+          activityEntry("status_changed", {
+            field: "status",
+            old_value: before.status ?? null,
+            new_value: status,
+            actor_id: actorId ?? null,
+            actor_name: await this.actorName(actorId),
+          }),
+        ]);
+      }
+      return updated;
     } catch (error) {
       throw error;
     }
@@ -932,15 +1144,70 @@ export class superAdminService {
     }
   }
 
-  public async assignProjectMembers(project_id: string, user_ids: string[]) {
+  public async assignProjectMembers(
+    project_id: string,
+    user_ids: string[],
+    actorId?: string,
+  ) {
     try {
       if (!project_id) throw new Error("Project id is required");
       if (!user_ids || !user_ids.length)
         throw new Error("At least one user is required");
-      return await SuperAdminRepository.assignMembers(project_id, user_ids);
+
+      // Who was actually NOT on the project before this call. assignMembers
+      // uses ignoreDuplicates, so re-sending the whole picker list is a no-op
+      // for people already on it — and logging those would fill the history
+      // with additions that never happened.
+      const added = await this.newMemberIds(project_id, user_ids);
+
+      const result = await SuperAdminRepository.assignMembers(
+        project_id,
+        user_ids,
+      );
+      await this.logMemberChange(project_id, added, "member_added", actorId);
+      return result;
     } catch (error) {
       throw error;
     }
+  }
+
+  // The ids in `user_ids` that do not already have a membership row.
+  private async newMemberIds(
+    project_id: string,
+    user_ids: string[],
+  ): Promise<string[]> {
+    const existing = await SuperAdminRepository.projectMemberIds(project_id);
+    const have = new Set(existing);
+    return [...new Set(user_ids)].filter((id) => !have.has(id));
+  }
+
+  // One entry per person, each naming them — a single "3 members added" row
+  // would not survive somebody asking which three.
+  private async logMemberChange(
+    project_id: string,
+    user_ids: string[],
+    action: ProjectActivityAction,
+    actorId?: string,
+  ) {
+    if (!user_ids.length) return;
+    const actor_name = await this.actorName(actorId);
+    const people = await userRepository.findUsersLite(user_ids);
+    const names = new Map(people.map((u: any) => [u.id, u.fullName]));
+    await SuperAdminRepository.appendProjectActivity(
+      project_id,
+      user_ids.map((user_id) =>
+        activityEntry(action, {
+          field: user_id,
+          // The person's name at the time, so the entry still reads after they
+          // are deleted. old/new carry it by direction: added lands in
+          // new_value, removed in old_value.
+          new_value: action === "member_added" ? names.get(user_id) ?? user_id : null,
+          old_value: action === "member_removed" ? names.get(user_id) ?? user_id : null,
+          actor_id: actorId ?? null,
+          actor_name,
+        }),
+      ),
+    );
   }
 
   public async assignProjectDomainToUser(project_id: string, user_id: string) {
@@ -955,12 +1222,36 @@ export class superAdminService {
     }
   }
 
-  public async removeProjectMembers(project_id: string, user_ids: string[]) {
+  public async removeProjectMembers(
+    project_id: string,
+    user_ids: string[],
+    actorId?: string,
+  ) {
     try {
       if (!project_id) throw new Error("Project id is required");
       if (!user_ids || !user_ids.length)
         throw new Error("At least one user is required");
-      return await SuperAdminRepository.removeMembers(project_id, user_ids);
+
+      // Read the membership on both sides rather than trusting the request:
+      // removing an AM also removes their direct reports, so the people who
+      // actually left is wider than the list that was sent.
+      const before = await SuperAdminRepository.projectMemberIds(project_id);
+      const result = await SuperAdminRepository.removeMembers(
+        project_id,
+        user_ids,
+      );
+      const after = new Set(
+        await SuperAdminRepository.projectMemberIds(project_id),
+      );
+      const removed = before.filter((id) => !after.has(id));
+
+      await this.logMemberChange(
+        project_id,
+        removed,
+        "member_removed",
+        actorId,
+      );
+      return result;
     } catch (error) {
       throw error;
     }

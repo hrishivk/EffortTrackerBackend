@@ -10,6 +10,7 @@ import { Project } from "../connection/models/project";
 import { Domain } from "../connection/models/domain";
 import { ProjectMember } from "../connection/models/project_member";
 import { TaskGroup } from "../connection/models/task_group";
+import { TaskExtension } from "../connection/models/task_extension";
 import { Transaction } from "sequelize";
 import { DateRange } from "../utils/dateRange";
 
@@ -112,6 +113,37 @@ const dailyLogDateWhere = (window?: string | DateRange): any => {
   return { [Op.between]: [window.from, window.to] };
 };
 
+// "Show me what has slipped" — §4 of the extensions request.
+//
+// A SQL predicate rather than a filter over the page already read: the board
+// query is paginated, and dropping rows after the fact gives short pages and a
+// totalPages that counts tasks the filter excluded.
+//
+// Matches a task that has been extended at least `min` times, OR one whose own
+// SUBTASK has. Without the second half a parent whose child slipped twice would
+// be missing from the very list built to find it — the board draws parents, so
+// that is where a child's slip has to surface.
+//
+// `min` is floored to an integer before interpolation because it is the one
+// value here that reaches the SQL as text.
+const extendedAtLeast = (min: number): any => {
+  const n = Math.max(1, Math.floor(Number(min) || 1));
+  return Sequelize.literal(
+    `(
+       "Task"."id" IN (
+         SELECT x.task_id FROM tracker.task_extensions x
+         GROUP BY x.task_id HAVING COUNT(*) >= ${n}
+       )
+       OR EXISTS (
+         SELECT 1 FROM tracker.tasks c
+         JOIN tracker.task_extensions x2 ON x2.task_id = c.id
+         WHERE c.parent_id = "Task"."id"
+         GROUP BY c.id HAVING COUNT(*) >= ${n}
+       )
+     )`
+  );
+};
+
 export const MAX_SESSION_SECONDS = 8 * 60 * 60;
 
 // REAL_STATUS_SET and STATUS_RANK_ORDER lived here for rollUpParentStatus,
@@ -184,6 +216,8 @@ export const subtaskInclude = (): any => ({
   required: false,
   separate: true,
   include: [
+    // A subtask has its own deadline, so it has its own extension log.
+    extensionInclude(),
     {
       model: TaskGroup,
       as: "group",
@@ -209,6 +243,33 @@ export const subtaskInclude = (): any => ({
     ["position", "ASC"],
     ["created_at", "ASC"],
   ],
+});
+
+// The recorded deadline pushes of a task, oldest first — the order the panel
+// draws the log in, and the same order comments[] uses.
+//
+// separate: true for the same reason subtaskInclude uses it: a hasMany with
+// its own ORDER BY cannot be ordered inside a LIMITed parent query, and the
+// board query is paginated. It also keeps a task with six extensions from
+// multiplying its own row six times in the join.
+//
+// extendedBy is resolved live, so a rename shows through on an old entry. It
+// comes back null for a user who has since been deleted — the extension row
+// deliberately outlives them (see the migration).
+export const extensionInclude = (): any => ({
+  model: TaskExtension,
+  as: "extensions",
+  required: false,
+  separate: true,
+  include: [
+    {
+      model: User,
+      as: "extendedBy",
+      attributes: ["id", "fullName", "email"],
+      required: false,
+    },
+  ],
+  order: [["created_at", "ASC"]],
 });
 
 export class UserRepository {
@@ -266,6 +327,7 @@ export class UserRepository {
       return await Task.findByPk(id, {
         include: [
           subtaskInclude(),
+          extensionInclude(),
           {
             model: DailyTaskLog,
             as: "dailyLog",
@@ -758,7 +820,8 @@ export class UserRepository {
     offset?: number,
     limit?: number,
     status?: string | string[],
-    scope?: { parentIds?: string[]; roomIds?: string[]; roomLogIds?: string[] }
+    scope?: { parentIds?: string[]; roomIds?: string[]; roomLogIds?: string[] },
+    minExtensions?: number
   ): Promise<{ tasks: Task[]; totalCount: number }> {
     try {
       const idArray = Array.isArray(ids) ? ids : [ids];
@@ -800,6 +863,12 @@ export class UserRepository {
           Sequelize.where(STATUS_SLUG, { [Op.in]: statuses }),
         ];
       }
+      if (minExtensions) {
+        whereClause[Op.and] = [
+          ...((whereClause[Op.and] as any[]) ?? []),
+          extendedAtLeast(minExtensions),
+        ];
+      }
 
       const queryOptions: any = {
         where: whereClause,
@@ -817,6 +886,7 @@ export class UserRepository {
           // Nested rather than listed alongside: a subtask is not its own
           // board card.
           subtaskInclude(),
+          extensionInclude(),
           {
             model: DailyTaskLog,
             as: "dailyLog",
@@ -857,7 +927,8 @@ export class UserRepository {
     offset?: number,
     limit?: number,
     status?: string | string[],
-    window?: string | DateRange
+    window?: string | DateRange,
+    minExtensions?: number
   ): Promise<{ tasks: Task[]; totalCount: number }> {
     try {
       const statuses = parseStatusFilter(status);
@@ -869,6 +940,12 @@ export class UserRepository {
       if (statuses) {
         whereClause[Op.and] = [
           Sequelize.where(STATUS_SLUG, { [Op.in]: statuses }),
+        ];
+      }
+      if (minExtensions) {
+        whereClause[Op.and] = [
+          ...((whereClause[Op.and] as any[]) ?? []),
+          extendedAtLeast(minExtensions),
         ];
       }
 
@@ -888,6 +965,7 @@ export class UserRepository {
           // Nested rather than listed alongside: a subtask is not its own
           // board card.
           subtaskInclude(),
+          extensionInclude(),
           {
             model: DailyTaskLog,
             as: "dailyLog",
@@ -1091,6 +1169,80 @@ export class UserRepository {
       return { id, subtask_ids };
     } catch (error) {
       console.error("Error deleting task:", error);
+      throw error;
+    }
+  }
+
+  // Records one deadline push and moves the task's own due_date, in a single
+  // transaction supplied by the caller.
+  //
+  // Both halves or neither: a row written without the date moving would claim
+  // a push that never happened, and a date moved without the row is exactly
+  // the silent edit this feature exists to replace.
+  public async createTaskExtension(
+    task: Task,
+    data: {
+      previous_due_date: string | null;
+      new_due_date: string;
+      reason: string;
+      extended_by?: string;
+    },
+    transaction?: Transaction
+  ): Promise<TaskExtension> {
+    try {
+      const row = await TaskExtension.create(
+        {
+          task_id: (task as any).id,
+          previous_due_date: data.previous_due_date,
+          new_due_date: data.new_due_date,
+          reason: data.reason,
+          extended_by: data.extended_by ?? null,
+        },
+        { transaction }
+      );
+
+      (task as any).due_date = data.new_due_date;
+      task.updated_at = new Date();
+      // Explicit field list, same reason as updateTaskLane: `comments` is a
+      // JSONB column this instance may be holding a stale copy of, and a bare
+      // save() would write it back over comments that landed in between.
+      await task.save({ fields: ["due_date", "updated_at"], transaction });
+
+      return row;
+    } catch (error) {
+      console.error("Error creating task extension:", error);
+      throw error;
+    }
+  }
+
+  // The task ids in this set that have at least `min` recorded extensions.
+  //
+  // One grouped query over task_extensions rather than a join on the board
+  // read: the board query is already paginated over daily logs, and joining a
+  // hasMany into it would multiply its rows. The caller filters the page it
+  // already has against this set.
+  public async taskIdsWithExtensions(
+    taskIds: string[],
+    min: number
+  ): Promise<Set<string>> {
+    try {
+      if (!taskIds.length) return new Set();
+      const rows: any[] = await TaskExtension.findAll({
+        where: { task_id: { [Op.in]: taskIds } },
+        attributes: [
+          "task_id",
+          [Sequelize.fn("COUNT", Sequelize.col("id")), "hits"],
+        ],
+        group: ["task_id"],
+        raw: true,
+      });
+      return new Set(
+        rows
+          .filter((row) => Number(row.hits) >= min)
+          .map((row) => String(row.task_id))
+      );
+    } catch (error) {
+      console.error("Error counting task extensions:", error);
       throw error;
     }
   }

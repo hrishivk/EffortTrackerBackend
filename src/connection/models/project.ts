@@ -16,6 +16,10 @@ export class Project
   public end_date!: Date | null;
   public status!: "active" | "on_hold" | "paused" | "completed";
   public progress!: number;
+  // Append-only history — see 023_project_activity.sql. Never assign to this
+  // and save() the instance: that is the read-modify-write the pure-SQL append
+  // exists to avoid.
+  public activity!: any[];
   public createdAt!: Date;
   public updatedAt!: Date;
 }
@@ -77,6 +81,13 @@ export const initProjectModel = (sequelize: Sequelize) => {
           min: 0,
           max: 100,
         },
+      },
+      // JSONB, not JSON: the append goes through the `||` operator in SQL, which
+      // json has no equivalent for and would force a read-modify-write in Node.
+      activity: {
+        type: DataTypes.JSONB,
+        allowNull: false,
+        defaultValue: [],
       },
       createdAt: {
         type: DataTypes.DATE,

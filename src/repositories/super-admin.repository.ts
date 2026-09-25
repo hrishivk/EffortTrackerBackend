@@ -9,6 +9,11 @@ import { AddUserDTO, EditUserDTO } from "../types/user.types";
 import { Task } from "../connection/models/tasks";
 import { NotificationRepository } from "./notification.repository";
 import { toProjectDetailView, toProjectView } from "../utils/projectView";
+import { Database } from "../connection/db/dbConnection";
+import {
+  ProjectActivityAction,
+  ProjectActivityEntry,
+} from "../types/project.types";
 
 const notificationRepo = new NotificationRepository();
 
@@ -1058,6 +1063,48 @@ export class superAdminRepository {
     }
   }
 
+  // Appends entries to projects.activity.
+  //
+  // ONE pure-SQL append, never a read-modify-write in Node. Two managers saving
+  // the same project in the same moment would otherwise each write back the
+  // array as they read it and drop the other's entries. This is the rule
+  // tasks.comments follows, for the same reason — see task-comment.repository.
+  //
+  // Takes the whole batch because one save produces one row per changed field:
+  // a rename that also moves the status is two entries and must be one append,
+  // or a concurrent writer could land between them.
+  //
+  // Returns false when no row matched — the project was deleted between the
+  // read that authorised the write and this call. Callers treat that as
+  // "nothing to log", never as a failure of the edit itself.
+  public async appendProjectActivity(
+    project_id: string,
+    entries: ProjectActivityEntry[],
+    transaction?: any,
+  ): Promise<boolean> {
+    try {
+      if (!entries.length) return true;
+      const sequelize = Database.getSequelize();
+      const [rows]: any = await sequelize.query(
+        `UPDATE tracker.projects
+            SET activity = activity || CAST(:elements AS jsonb)
+          WHERE id = :project_id
+          RETURNING id`,
+        {
+          replacements: {
+            elements: JSON.stringify(entries),
+            project_id,
+          },
+          transaction,
+        },
+      );
+      return !!(rows && rows.length);
+    } catch (error) {
+      console.error("Error appending project activity:", error);
+      throw error;
+    }
+  }
+
   public async createProject(data: any) {
     try {
       return await Project.create(data);
@@ -1177,6 +1224,20 @@ export class superAdminRepository {
       throw error;
     }
   }
+  // Just the ids, for the activity log's before/after comparison.
+  public async projectMemberIds(project_id: string): Promise<string[]> {
+    try {
+      const rows = await ProjectMember.findAll({
+        where: { project_id },
+        attributes: ["user_id"],
+        raw: true,
+      });
+      return [...new Set(rows.map((row: any) => String(row.user_id)))];
+    } catch (error) {
+      throw error;
+    }
+  }
+
   public async assignMembers(project_id: string, user_ids: string[]) {
     try {
       const project = await Project.findByPk(project_id);

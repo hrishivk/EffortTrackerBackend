@@ -232,17 +232,49 @@ export class userService {
           await userRepository.closeOpenSessions(previousLog.id);
 
           const { tasks: previousTasks } = await userRepository.todayTask(previousLog.id);
-          const carryOverTasks = previousTasks.filter((task: any) => {
-            const status = task.dataValues.status?.toLowerCase().trim();
+
+          // Does the task itself have work left on it?
+          const isUnfinished = (row: any): boolean => {
+            const status = statusSlug(row?.status ?? row?.dataValues?.status);
             return status === "in_progress" || status === "yet_to_start";
-          });
+          };
+          // Its children with work left. `!== completed` rather than the pair
+          // above, matching the child loop below: a blocked subtask is still
+          // outstanding work and comes across.
+          const openChildrenOf = (task: any): any[] =>
+            ((task as any).subtasks ?? []).filter(
+              (sub: any) => statusSlug(sub.status) !== "completed"
+            );
+
+          // A parent carries when IT is unfinished, OR when any of its
+          // subtasks is.
+          //
+          // The second half is the fix for a task that vanished overnight:
+          // todayTask returns parents only, so reading the parent's status
+          // alone meant a COMPLETED parent with an open subtask carried
+          // nothing — the parent was filtered out, and the child went with it
+          // because a child only ever carries underneath its parent. The state
+          // is reachable by adding a subtask to a task that is already
+          // completed, which nothing forbids.
+          const carryOverTasks = previousTasks.filter(
+            (task: any) => isUnfinished(task) || openChildrenOf(task).length > 0
+          );
           if (carryOverTasks.length > 0) {
             const today = new Date();
             const formattedToday = today.toISOString().split("T")[0];
-            const carryLane = await taskGroupRepository.findVisibleLaneForStatus(
-              id,
-              CARRY_OVER_STATUS
-            );
+            // One lookup per distinct status, not per task. A carried-forward
+            // parent keeps its own status, so this is no longer always the
+            // yet_to_start lane.
+            const laneCache = new Map<string, any>();
+            const laneFor = async (status: string) => {
+              if (!laneCache.has(status)) {
+                laneCache.set(
+                  status,
+                  await taskGroupRepository.findVisibleLaneForStatus(id, status)
+                );
+              }
+              return laneCache.get(status);
+            };
             const carriedProjectId =
               (previousLog as any).project_id ??
               carryOverTasks[0]?.dataValues?.project_id ??
@@ -254,13 +286,20 @@ export class userService {
               carriedProjectId
             );
             for (const task of carryOverTasks) {
+              // An unfinished task restarts as yet_to_start. A task that is
+              // only here because a SUBTASK is still open keeps its own status
+              // — it is coming across as the container for that child, and
+              // rewriting a completed parent to yet_to_start would reopen work
+              // its owner had accepted.
+              const carriedStatus = isUnfinished(task)
+                ? CARRY_OVER_STATUS
+                : String(task.dataValues.status);
+              const carryLane = await laneFor(carriedStatus);
 
               // Every carried task lands in the lane matching the status it
               // arrives on, so nothing comes across without a lane — whether it
               // was in a status-named lane yesterday or in none at all. A custom
-              // lane ("Production") is the one exception and is kept as-is,
-              // though it cannot reach here in practice: a custom lane is only
-              // reachable from completed, and completed work does not carry.
+              // lane ("Production") is the one exception and is kept as-is.
               let groupId: string | null = carryLane?.id ?? null;
               const sourceGroupId: string | null =
                 task.dataValues.group_id ?? null;
@@ -280,7 +319,7 @@ export class userService {
                 project_id: task.project_id,
                 description: task.description,
                 priority: task.priority,
-                status: CARRY_OVER_STATUS,
+                status: carriedStatus,
                 group_id: groupId,
                 start_date: task.dataValues.start_date,
                 due_date: task.dataValues.due_date,
@@ -296,7 +335,18 @@ export class userService {
               // Without this they would be skipped entirely, because todayTask
               // only returns parents — and if they were carried as top-level
               // tasks instead they would each become their own board card.
-              // Finished subtasks stay behind, same rule as their parent.
+              //
+              // The WHOLE set comes across, completed ones included, each
+              // keeping what it was: a completed child carries as completed, an
+              // unfinished one restarts as yet_to_start. Leaving the finished
+              // ones behind made today's card claim 0 of 1 done on work that
+              // was really 1 of 2 — the progress a manager reads off the card
+              // would reset every night.
+              //
+              // The copy does NOT carry total_seconds, so a carried completed
+              // child shows no time against today. That is deliberate: the
+              // hours were banked on yesterday's row, and copying them would
+              // count the same work twice in the reports.
               //
               // Each child is carried into ITS OWN assignee's log for the new
               // date, not into the log of whoever happens to be logging in.
@@ -308,8 +358,12 @@ export class userService {
               const subtasks: any[] = (task as any).subtasks ?? [];
               const carryLogs = new Map<string, any>([[id, todayLog]]);
               for (const sub of subtasks) {
-                const subStatus = String(sub.status ?? "").toLowerCase().trim();
-                if (subStatus === "completed") continue;
+                const subStatus = statusSlug(sub.status);
+                // Completed stays completed; everything else — in_progress,
+                // yet_to_start, blocked — restarts as yet_to_start, the same
+                // rule the parent follows.
+                const subCarriedStatus =
+                  subStatus === "completed" ? "completed" : CARRY_OVER_STATUS;
 
                 const subAssignee: string =
                   sub.dailyLog?.assigned_to ??
@@ -343,7 +397,7 @@ export class userService {
                   project_id: sub.project_id ?? task.project_id,
                   description: sub.description,
                   priority: sub.priority,
-                  status: CARRY_OVER_STATUS,
+                  status: subCarriedStatus,
                   start_date: sub.start_date,
                   due_date: sub.due_date,
                   parent_id: carried.id,
@@ -629,7 +683,7 @@ export class userService {
   // utils/taskView. The shape is a superset of what it used to return.
   public async listTask(data: any): Promise<{ data: any[]; totalPages: number }> {
     try {
-      const { date, range, id, role, assigned_to, project, status, page = 1, limit = 10 } = data;
+      const { date, range, id, role, assigned_to, project, status, page = 1, limit = 10, minExtensions } = data;
       const skip = (page - 1) * limit;
 
       // §0. Downstream, one date and an inclusive {from, to} window are the
@@ -651,7 +705,7 @@ export class userService {
       // quietly narrowing it to the caller's own tasks — the numbers on the
       // reports page would move for a reason nobody asked for.
       if (!date && projectId) {
-        const { tasks, totalCount } = await userRepository.tasksByProject(projectId, skip, limit, status, range);
+        const { tasks, totalCount } = await userRepository.tasksByProject(projectId, skip, limit, status, range, minExtensions);
         return {
           data: decorateTasks(tasks, await commentAuthorsFor(tasks)),
           totalPages: Math.ceil(totalCount / limit),
@@ -702,7 +756,8 @@ export class userService {
         skip,
         limit,
         status,
-        { parentIds, roomIds, roomLogIds }
+        { parentIds, roomIds, roomLogIds },
+        minExtensions
       );
 
       return {
@@ -984,6 +1039,110 @@ export class userService {
       };
     } catch (error) {
       console.error("Error in updateStatus:", error);
+      throw error;
+    }
+  }
+
+  // POST /role-user/task/extend — push a deadline, on the record.
+  //
+  // Not a PATCH of due_date. The date is only half of it: the row this writes
+  // is what makes "extended twice, 21st -> 25th -> 30th, because QA slipped"
+  // recoverable, and a silent edit of the column loses every part of that but
+  // the final date.
+  //
+  // Works on a subtask as well as a main task — a subtask has its own deadline,
+  // so it has its own log.
+  public async extendTask(data: {
+    task_id: string;
+    due_date: string;
+    reason: string;
+    user?: { id?: string; role?: string };
+  }) {
+    try {
+      const task_id = String(data.task_id ?? "").trim();
+      if (!task_id) throw new TaskValidationError("task_id is required");
+
+      // The whole point of the feature. Rejected before anything else so a
+      // client cannot get the date moved and then fail on the why.
+      const reason = String(data.reason ?? "").trim();
+      if (!reason) {
+        throw new TaskValidationError("reason is required to extend a task");
+      }
+
+      const parsed = parseEditableDate(data.due_date, "due_date");
+      if (!parsed) {
+        throw new TaskValidationError("due_date is required");
+      }
+      const new_due_date = parsed;
+
+      const task = (await userRepository.findTask(task_id)) as TaskWithDailyLog;
+      if (!task) throw new Error("Task not found");
+
+      const viewerId = data.user?.id;
+      if (!viewerId) throw new Error("User not authenticated");
+
+      // The assignee, the creator, an AM over either of them, or SP. The same
+      // set that may delete the task — extending is a change to somebody's
+      // committed date, so "can see it" is not enough.
+      const log: any =
+        (task as any).dailyLog ?? (task as any).dataValues?.dailyLog;
+      const owners = new Set<string>();
+      if (log?.created_by) owners.add(log.created_by);
+      if (log?.assigned_to) owners.add(log.assigned_to);
+
+      let allowed = data.user?.role === "SP" || owners.has(viewerId);
+      if (!allowed && data.user?.role === "AM") {
+        for (const owner of owners) {
+          if (await taskGroupRepository.isBoardManagedBy(viewerId, owner)) {
+            allowed = true;
+            break;
+          }
+        }
+      }
+      if (!allowed) {
+        throw new TaskForbiddenError("Not authorized to extend this task");
+      }
+
+      if (task.isLocked) {
+        throw new Error("Task is locked. Cannot extend.");
+      }
+      if (log?.locked) {
+        throw new Error("Daily log is locked. Cannot extend task.");
+      }
+
+      // DATEONLY comes back as "YYYY-MM-DD", so a string compare is a date
+      // compare — no timezone to get wrong.
+      const previous_due_date: string | null =
+        ((task as any).due_date as string | null) ?? null;
+      if (previous_due_date && String(new_due_date) <= String(previous_due_date)) {
+        // Pulling a deadline IN is not an extension. It is a legitimate edit,
+        // it just belongs on PATCH /updateTask where it is not recorded as a
+        // slip — calling it one would inflate the count this table exists to
+        // report.
+        throw new TaskValidationError(
+          "New due date must be after the current one. To bring a deadline forward, edit the task instead"
+        );
+      }
+
+      const sequelize = Database.getSequelize();
+      await sequelize.transaction(async (t: Transaction) =>
+        userRepository.createTaskExtension(
+          task,
+          { previous_due_date, new_due_date, reason, extended_by: viewerId },
+          t
+        )
+      );
+
+      // Same read model /task-list returns, so the panel can redraw the card
+      // and its new log entry from this response alone. A subtask re-reads
+      // through its parent, which is the card the board actually draws.
+      const parentId: string | null = (task as any).parent_id ?? null;
+      const view = await userRepository.findTaskWithSubtasks(parentId ?? task_id);
+      if (!view) return task;
+      const authors = await commentAuthorsFor([view]);
+      return decorateTask(view, authors);
+    } catch (error) {
+      console.error("Error in extendTask:", error);
       throw error;
     }
   }

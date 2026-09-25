@@ -26,6 +26,13 @@ export const toProjectView = (
     totalTasks: tasks.total,
     completedTasks: tasks.completed,
     domain: plain.domain || null,
+    // Backs the "Extended N times" badge on the row. On the LIST as well as the
+    // detail, so the table can draw it without opening every project. Only the
+    // count: the entries themselves are detail-panel material and would make
+    // the list payload grow with every edit anyone ever made.
+    extension_count: (Array.isArray(plain.activity) ? plain.activity : []).filter(
+      (entry: any) => entry?.action === "extended",
+    ).length,
     teamAssigned: (plain.members || []).map((m: any) => ({
       id: m.id,
       name: m.fullName,
@@ -65,6 +72,25 @@ export const toProjectDetailView = (
     // the detail screen can show "created by X on Y".
     created_by: plain.created_by ?? null,
     created_at: plain.created_at ?? plain.createdAt ?? null,
+
+    // The Activity panel. NEWEST FIRST — the opposite of a task's extensions[],
+    // because this is a feed read from the top, not a chronological log read
+    // from the beginning.
+    //
+    // Stored oldest-first (it is an append-only jsonb array) and reversed here,
+    // so the write path stays a plain `||` append.
+    activity: [...(Array.isArray(plain.activity) ? plain.activity : [])]
+      .sort(
+        (a: any, b: any) =>
+          new Date(b?.created_at ?? 0).getTime() -
+          new Date(a?.created_at ?? 0).getTime(),
+      ),
+
+    // Only the pushes. `activity.length` counts renames and status moves too,
+    // so the badge needs its own number.
+    extension_count: (Array.isArray(plain.activity) ? plain.activity : []).filter(
+      (entry: any) => entry?.action === "extended",
+    ).length,
 
     editValues: {
       id: plain.id,

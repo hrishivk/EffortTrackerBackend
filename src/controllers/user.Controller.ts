@@ -118,7 +118,20 @@ export class userController {
   }
   public async taskList(req: Request, res: Response) {
     try {
-      const { date, from, to, assigned_to, project, status, page = "1", limit = "10" } = req.query;
+      const { date, from, to, assigned_to, project, status, page = "1", limit = "10", extended, min_extensions } = req.query;
+
+      // "What has slipped, and why" in one request. Two spellings of one
+      // filter: `?extended=true` is the common case and means at least one
+      // push; `?min_extensions=2` is the badge case — tasks pushed more than
+      // once. An explicit min wins if both arrive.
+      let minExtensions: number | undefined;
+      if (min_extensions !== undefined) {
+        const parsed = Math.floor(Number(min_extensions));
+        if (Number.isFinite(parsed) && parsed >= 1) minExtensions = parsed;
+      } else if (extended !== undefined) {
+        const flag = String(extended).trim().toLowerCase();
+        if (flag === "true" || flag === "1") minExtensions = 1;
+      }
       const id = req.user?.id;
       const role = req.user?.role;
 
@@ -145,6 +158,7 @@ export class userController {
         date: day, range, id, role, assigned_to, project, status,
         page: parseInt(page as string),
         limit: parseInt(limit as string),
+        minExtensions,
       });
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
@@ -239,6 +253,42 @@ export class userController {
     }
   }
 
+  public async extendTask(req: Request, res: Response) {
+    try {
+      const body = req.body ?? {};
+      const data = await UserService.extendTask({
+        task_id: body.task_id,
+        due_date: body.due_date,
+        reason: body.reason,
+        user: { id: req.user?.id, role: req.user?.role },
+      });
+      sendResponse(res, HTTP_statusCode.CREATED, {
+        success: true,
+        message: "Task extended successfully",
+        data,
+      });
+    } catch (error: any) {
+      const message = String(error.message ?? "");
+      const statusCode =
+        error.name === "TaskForbiddenError"
+          ? HTTP_statusCode.NoAccess
+          : error.name === "TaskValidationError"
+          ? HTTP_statusCode.BadRequest
+          : message === "Task not found"
+          ? HTTP_statusCode.NotFound
+          : message === "User not authenticated"
+          ? HTTP_statusCode.unAuthorized
+          : message === "Task is locked. Cannot extend." ||
+            message === "Daily log is locked. Cannot extend task."
+          ? HTTP_statusCode.locked
+          : HTTP_statusCode.TaskFailed;
+      sendResponse(res, statusCode, {
+        success: false,
+        message: error.message || "Task extension failed",
+      });
+    }
+  }
+
   // DELETE /role-user/task?id=<taskId> — remove a task, or one subtask.
   //
   // Irreversible, and a main task takes its subtasks with it, so the response
@@ -289,11 +339,7 @@ export class userController {
     }
   }
 
-  // POST /role-user/task/subtask — add one subtask to an existing task.
-  //
-  // project_id and room_id are deliberately NOT read off the body: the service
-  // takes them from the parent row. A client that sends them is ignored rather
-  // than trusted, because the only correct value is the parent's.
+
   public async addSubtask(req: Request, res: Response) {
     try {
       const body = req.body ?? {};
@@ -301,8 +347,7 @@ export class userController {
         parent_id: body.parent_id,
         description: body.description,
         assigned_to: body.assigned_to,
-        // The caller identifies the actor, falling back to the token's user so
-        // the notification names somebody even when the client omits it.
+
         created_by: body.created_by ?? req.user?.id,
         priority: body.priority,
         start_date: body.start_date,
