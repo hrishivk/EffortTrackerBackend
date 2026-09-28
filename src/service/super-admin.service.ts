@@ -621,15 +621,17 @@ export class superAdminService {
       }
 
       // --- shared flag ------------------------------------------------------
-      // SP-only. AM saves omit it; if one arrives anyway it is tolerated when it
-      // matches what is stored, and never written.
+      // An SP may flip it on anyone. An AM may flip it only on their own team:
+      // a shared user from another AM's team is reachable to this AM only
+      // BECAUSE it is shared, so un-sharing it would be one AM pulling another's
+      // user out of every other domain. Re-sending the stored value is always a
+      // no-op, since the modal echoes it back on every save.
       if (data.is_shared !== undefined) {
         const requestedShared = String(data.is_shared) === "true";
-        if (isAdminCaller) {
-          if (requestedShared !== Boolean(existing.is_shared)) {
+        if (requestedShared !== Boolean(existing.is_shared)) {
+          if (isAdminCaller && existing.manager_id !== currentUserId) {
             throw new Error("An admin manager cannot change the shared flag");
           }
-        } else {
           update.is_shared = requestedShared;
         }
       }
@@ -709,6 +711,12 @@ export class superAdminService {
         if (isSharedUser && !sharedDomainIds.length) {
           throw new Error("A shared user must be assigned to at least one domain");
         }
+      } else if (
+        update.is_shared === true &&
+        !(existing.assignedDomains ?? []).length
+      ) {
+        // Turned shared without sending domains: the stored set has to carry it
+        throw new Error("A shared user must be assigned to at least one domain");
       }
 
       // --- projects ---------------------------------------------------------
