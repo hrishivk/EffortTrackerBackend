@@ -163,18 +163,18 @@ export class superAdminService {
     if (!password) {
       throw new Error("Password is required.");
     }
-    // A shared user is only visible through its domains, so it needs at least one
-    let sharedDomainIds: string[] = [];
-    if (isSharedUser) {
-      sharedDomainIds = await this.resolveSharedUserDomains(
-        data.domain_ids,
-        manager_id,
-        creatorRole,
-        true,
-      );
-      if (!sharedDomainIds.length) {
-        throw new Error("A shared user must be assigned to at least one domain");
-      }
+    // Domain links are saved for every user that sends them, as updateUser
+    // does - gating this on is_shared silently dropped the domains of a
+    // non-shared AM, leaving /list-domains empty for them. A shared user is
+    // only visible through its domains, so it still needs at least one.
+    const sharedDomainIds = await this.resolveSharedUserDomains(
+      data.domain_ids,
+      manager_id,
+      creatorRole,
+      isSharedUser,
+    );
+    if (isSharedUser && !sharedDomainIds.length) {
+      throw new Error("A shared user must be assigned to at least one domain");
     }
     const emailExists = await userRepository.findUserByEmail(email);
     if (emailExists) {
