@@ -3,13 +3,19 @@ import { userController } from "../controllers/user.Controller";
 import { roleGuards } from "../middlewares/verifyRole";
 import { WorkspaceController } from "../controllers/workspace.controller";
 import { ReportController } from "../controllers/report.controller";
+import { SuperAdminController } from "../controllers/super-admin.controller";
 export class UserRoute {
   private router: Router = expres.Router();
   private controller = new userController();
+  private spController = new SuperAdminController();
   private workspaceController = new WorkspaceController();
   private reportController = new ReportController();
   constructor() {
     this.router.get("/list-projects", roleGuards.allAcess, this.controller.listProjects);
+    // The cards above the project list. Same handler as /role-sp; the stats are
+    // scoped by the same visibility rule as /list-projects, so a USER or
+    // DEVLOPER only counts the projects they are on.
+    this.router.get("/project-stats", roleGuards.allAcess, this.spController.projectStats);
     this.router.post("/task", roleGuards.allAcess, this.controller.task);
     this.router.get("/task-list", roleGuards.allAcess, this.controller.taskList);
     this.router.patch("/task-lock", roleGuards.allAcess, this.controller.taskLock);
