@@ -85,6 +85,17 @@ export class UserRoute {
     // writes nothing on a bad request.
     this.router.post("/workspaces/notify-completed", roleGuards.allAcess, this.workspaceController.notifyCompleted);
 
+    // Assigned managers: other AMs the creator hands the workspace's rights to.
+    // allAcess here and narrowed in the service: reading the list needs manage
+    // rights, while assigning, removing and the candidate picker are creator
+    // (or SP) only.
+    this.router.get("/workspaces/managers", roleGuards.allAcess, this.workspaceController.getManagers);
+    this.router.post("/workspaces/managers", roleGuards.allAcess, this.workspaceController.assignManagers);
+    this.router.delete("/workspaces/managers", roleGuards.allAcess, this.workspaceController.removeManager);
+    // Same handler as the DELETE, for clients that cannot send a DELETE body.
+    this.router.post("/workspaces/managers/unassign", roleGuards.allAcess, this.workspaceController.removeManager);
+    this.router.get("/workspaces/manager-candidates", roleGuards.allAcess, this.workspaceController.getManagerCandidates);
+
     this.router.get("/workspaces", roleGuards.allAcess, this.workspaceController.getWorkspaces);
     this.router.post("/workspaces", roleGuards.allAcess, this.workspaceController.createWorkspace);
     this.router.patch("/workspaces", roleGuards.allAcess, this.workspaceController.updateWorkspace);

@@ -4,6 +4,7 @@ import { Workspace } from "../connection/models/workspace";
 import { Room } from "../connection/models/room";
 import { RoomMember } from "../connection/models/room_member";
 import { WorkspaceUnlock } from "../connection/models/workspace_unlock";
+import { WorkspaceManager } from "../connection/models/workspace_manager";
 import { Project } from "../connection/models/project";
 import { User } from "../connection/models/user";
 import { Task } from "../connection/models/tasks";
@@ -179,7 +180,7 @@ export class WorkspaceRepository {
     // people spread as 2 + 1 + 2 is five rows. The hero asks "how many people",
     // so distinct is the right answer, and per-room counts summing to more than
     // it is expected rather than a bug.
-    const [roomCount, memberCount, taskCounts, completionNotice] =
+    const [roomCount, memberCount, taskCounts, completionNotice, managers] =
       await Promise.all([
         Room.count({ where: { workspace_id: json.id } }),
         RoomMember.count({
@@ -192,6 +193,7 @@ export class WorkspaceRepository {
         // workspaces this costs nothing, which is what keeps it from being an
         // N+1 — decorateWorkspace runs once per row.
         json.completed_at ? this.completionNoticeFor(json.id) : null,
+        this.managersLite(json.id),
       ]);
 
     if (Array.isArray(json.rooms)) {
@@ -223,8 +225,18 @@ export class WorkspaceRepository {
       delete json.code;
     }
 
+    // The literal creator. Assigning or removing managers, and deleting the
+    // workspace, are creator-or-SP only (an assigned manager cannot pass the
+    // role on), so the client needs to tell the two apart. can_assign_managers
+    // is the gate for those controls, since SP may use them without being the
+    // creator.
+    const isCreator = !!viewer.userId && json.created_by === viewer.userId;
+
     return {
       ...json,
+      managers,
+      isCreator,
+      can_assign_managers: viewer.role === "SP" || isCreator,
       // Gates the copy-key button. A server decision, so an AM looking at
       // another AM's workspace is told `false` instead of the client inferring
       // `true` from its own role.
@@ -413,18 +425,10 @@ export class WorkspaceRepository {
   // service now decides per row whether the caller gets the row at all or a
   // locked stub, and only the readable ones are worth the counts.
   //
-  // can_manage is per row: an AM manages the ones they created, not the ones
-  // another AM did.
+  // can_manage is per row and decided by the service: an AM manages the ones
+  // they created or were assigned to, not the ones another AM did.
   public async decorateListRow(row: any, viewer: WorkspaceViewer) {
-    return await this.decorateWorkspace(row, {
-      ...viewer,
-      canManage: this.canManageRow(viewer, row.created_by),
-    });
-  }
-
-  public canManageRow(viewer: WorkspaceViewer, created_by: string | null) {
-    if (viewer.role === "SP") return true;
-    return created_by === viewer.userId;
+    return await this.decorateWorkspace(row, viewer);
   }
 
   public async findById(id: string, viewer: WorkspaceViewer) {
@@ -1145,6 +1149,179 @@ export class WorkspaceRepository {
         where: { id: { [Op.in]: unique } },
         attributes: ["id", "fullName", "email"],
         raw: true,
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // ── Assigned managers ─────────────────────────────────────────────────────
+
+  // Is this user an ASSIGNED manager of this workspace? The creator is not
+  // stored here; WorkspaceService.isWorkspaceManager asks both questions.
+  public async isAssignedManager(
+    workspace_id: string,
+    user_id: string
+  ): Promise<boolean> {
+    try {
+      return (
+        (await WorkspaceManager.count({ where: { workspace_id, user_id } })) > 0
+      );
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Every workspace this user is an assigned manager of. Drives the list's
+  // claim filter, so it spans workspaces like workspaceIdsWithMembership.
+  public async managedWorkspaceIds(user_id: string): Promise<string[]> {
+    try {
+      const rows = await WorkspaceManager.findAll({
+        where: { user_id },
+        attributes: ["workspace_id"],
+        raw: true,
+      });
+      return rows.map((r: any) => r.workspace_id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async managedUserIds(workspace_id: string): Promise<string[]> {
+    try {
+      const rows = await WorkspaceManager.findAll({
+        where: { workspace_id },
+        attributes: ["user_id"],
+        raw: true,
+      });
+      return rows.map((r: any) => r.user_id);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // The `managers` embed on every workspace read: names only, oldest first.
+  public async managersLite(
+    workspace_id: string
+  ): Promise<Array<{ id: string; fullName: string | null }>> {
+    try {
+      const rows: any[] = await WorkspaceManager.findAll({
+        where: { workspace_id },
+        include: [{ model: User, as: "user", attributes: ["id", "fullName"] }],
+        order: [["created_at", "ASC"]],
+      });
+      return rows
+        .filter((r) => r.user)
+        .map((r) => ({ id: r.user.id, fullName: r.user.fullName ?? null }));
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // GET /workspaces/managers: the full list for the settings panel.
+  public async listManagers(workspace_id: string) {
+    try {
+      const rows: any[] = await WorkspaceManager.findAll({
+        where: { workspace_id },
+        include: [
+          { model: User, as: "user", attributes: ["id", "fullName", "email"] },
+        ],
+        order: [["created_at", "ASC"]],
+      });
+      return rows
+        .filter((r) => r.user)
+        .map((r) => ({
+          id: r.user.id,
+          fullName: r.user.fullName ?? null,
+          email: r.user.email ?? null,
+          assigned_by: r.assigned_by ?? null,
+          created_at: r.created_at,
+        }));
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // The AMs the picker may offer: active AMs who are neither the creator nor
+  // already assigned.
+  public async managerCandidates(
+    workspace_id: string,
+    created_by: string | null
+  ) {
+    try {
+      const assigned = await this.managedUserIds(workspace_id);
+      const exclude = [...assigned, ...(created_by ? [created_by] : [])];
+      return await User.findAll({
+        where: {
+          role: "AM",
+          isBlocked: false,
+          ...(exclude.length ? { id: { [Op.notIn]: exclude } } : {}),
+        },
+        attributes: ["id", "fullName", "email"],
+        order: [["fullName", "ASC"]],
+        raw: true,
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // The ids in `wanted` that may NOT be assigned as a manager, each with the
+  // reason, in the order sent. Nothing is written when this runs, so the whole
+  // request can be refused with a 400 naming the first bad entry.
+  public async invalidManagerIds(
+    wanted: string[]
+  ): Promise<Array<{ index: number; id: string; reason: string }>> {
+    try {
+      const bad: Array<{ index: number; id: string; reason: string }> = [];
+      if (!wanted.length) return bad;
+      const found: any[] = await User.findAll({
+        where: { id: { [Op.in]: [...new Set(wanted)] } },
+        attributes: ["id", "role", "isBlocked"],
+        raw: true,
+      });
+      const byId = new Map(found.map((u: any) => [u.id, u]));
+      wanted.forEach((id, index) => {
+        const user = byId.get(id);
+        if (!user) bad.push({ index, id, reason: "not a known user" });
+        else if (user.isBlocked)
+          bad.push({ index, id, reason: "account is blocked" });
+        else if (user.role !== "AM")
+          bad.push({ index, id, reason: `role ${user.role} is not AM` });
+      });
+      return bad;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Writes the assignments that do not exist yet and returns just those ids, so
+  // the caller notifies only people who were not already managers.
+  public async addManagers(
+    workspace_id: string,
+    user_ids: string[],
+    assigned_by: string
+  ): Promise<string[]> {
+    try {
+      const existing = await this.managedUserIds(workspace_id);
+      const fresh = user_ids.filter((id) => !existing.includes(id));
+      if (fresh.length) {
+        await WorkspaceManager.bulkCreate(
+          fresh.map((user_id) => ({ workspace_id, user_id, assigned_by })),
+          { ignoreDuplicates: true }
+        );
+      }
+      return fresh;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async removeManagers(workspace_id: string, user_ids: string[]) {
+    try {
+      if (!user_ids.length) return 0;
+      return await WorkspaceManager.destroy({
+        where: { workspace_id, user_id: { [Op.in]: user_ids } },
       });
     } catch (error) {
       throw error;

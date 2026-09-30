@@ -158,7 +158,8 @@ export interface RoomPatch {
 export interface WorkspaceViewer {
   userId: string;
   role?: string;
-  // true for SP and for the AM who created the workspace. Sent to the client as
+  // true for SP, the AM who created the workspace, and any AM assigned to it
+  // through workspace_managers. Sent to the client as
   // `can_manage` so the copy-key button can be gated on a server decision
   // instead of a guess from user.role.
   canManage: boolean;

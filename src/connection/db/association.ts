@@ -14,6 +14,7 @@ import initWorkspaceModel, { Workspace } from "../models/workspace";
 import initRoomModel, { Room } from "../models/room";
 import initRoomMemberModel, { RoomMember } from "../models/room_member";
 import initWorkspaceUnlockModel, { WorkspaceUnlock } from "../models/workspace_unlock";
+import initWorkspaceManagerModel, { WorkspaceManager } from "../models/workspace_manager";
 import initTaskExtensionModel, { TaskExtension } from "../models/task_extension";
 import { Sequelize } from "sequelize";
 
@@ -412,6 +413,29 @@ export class Associations {
       onDelete: "CASCADE",
     });
 
+    // Assigned managers. CASCADE on the workspace and the manager; the assigner
+    // is SET NULL so an assignment outlives whoever recorded it.
+    WorkspaceManager.belongsTo(Workspace, {
+      foreignKey: "workspace_id",
+      as: "workspace",
+      onDelete: "CASCADE",
+    });
+    WorkspaceManager.belongsTo(User, {
+      foreignKey: "user_id",
+      as: "user",
+      onDelete: "CASCADE",
+    });
+    WorkspaceManager.belongsTo(User, {
+      foreignKey: "assigned_by",
+      as: "assigner",
+      onDelete: "SET NULL",
+    });
+    Workspace.hasMany(WorkspaceManager, {
+      foreignKey: "workspace_id",
+      as: "managerLinks",
+      onDelete: "CASCADE",
+    });
+
   }
 
   static initModels(sequelize: Sequelize) {
@@ -431,6 +455,7 @@ export class Associations {
     initRoomModel(sequelize);
     initRoomMemberModel(sequelize);
     initWorkspaceUnlockModel(sequelize);
+    initWorkspaceManagerModel(sequelize);
     initTaskExtensionModel(sequelize);
   }
 }

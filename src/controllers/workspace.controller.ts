@@ -25,7 +25,8 @@ const workspaceErrorCode = (message?: string): HTTP_statusCode => {
     message === "Workspace not found" ||
     message === "Room not found" ||
     message === "Project not found" ||
-    message === "Membership not found"
+    message === "Membership not found" ||
+    message.startsWith("Manager not found")
   )
     return HTTP_statusCode.NotFound;
 
@@ -188,6 +189,92 @@ export class WorkspaceController {
       sendResponse(res, workspaceErrorCode(message), {
         success: false,
         message: message || "Failed to announce workspace completion",
+      });
+    }
+  }
+
+  public async getManagers(req: Request, res: Response) {
+    try {
+      const data = await workspaceService.listManagers(
+        req.user?.id as string,
+        req.user?.role,
+        req.query.id as string
+      );
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "workspace managers fetched successfully",
+        data,
+      });
+    } catch (error: any) {
+      const message = publicMessage(error);
+      sendResponse(res, workspaceErrorCode(message), {
+        success: false,
+        message: message || "Failed to fetch workspace managers",
+      });
+    }
+  }
+
+  public async getManagerCandidates(req: Request, res: Response) {
+    try {
+      const data = await workspaceService.listManagerCandidates(
+        req.user?.id as string,
+        req.user?.role,
+        req.query.id as string
+      );
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "manager candidates fetched successfully",
+        data,
+      });
+    } catch (error: any) {
+      const message = publicMessage(error);
+      sendResponse(res, workspaceErrorCode(message), {
+        success: false,
+        message: message || "Failed to fetch manager candidates",
+      });
+    }
+  }
+
+  public async assignManagers(req: Request, res: Response) {
+    try {
+      const data = await workspaceService.assignManagers(
+        req.user?.id as string,
+        req.user?.role,
+        req.body ?? {}
+      );
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "workspace managers assigned successfully",
+        data,
+      });
+    } catch (error: any) {
+      const message = publicMessage(error);
+      sendResponse(res, workspaceErrorCode(message), {
+        success: false,
+        message: message || "Failed to assign workspace managers",
+      });
+    }
+  }
+
+  public async removeManager(req: Request, res: Response) {
+    try {
+      // Query and body merged, body winning: DELETE bodies are dropped by some
+      // clients and proxies, and every other DELETE here uses the query string.
+      const data = await workspaceService.removeManager(
+        req.user?.id as string,
+        req.user?.role,
+        { ...(req.query ?? {}), ...(req.body ?? {}) }
+      );
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "workspace manager removed successfully",
+        data,
+      });
+    } catch (error: any) {
+      const message = publicMessage(error);
+      sendResponse(res, workspaceErrorCode(message), {
+        success: false,
+        message: message || "Failed to remove workspace manager",
       });
     }
   }

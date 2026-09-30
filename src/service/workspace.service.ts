@@ -112,6 +112,12 @@ const ROOM_NOT_FOUND = "Room not found";
 // finished, so it refuses a workspace that is not.
 const WORKSPACE_NOT_COMPLETED = "Workspace is not completed";
 
+// 403 for an assigned manager attempting a creator-only write.
+const ONLY_CREATOR =
+  "Not authorized: only the workspace creator can do this";
+
+const MANAGER_NOT_FOUND = "Manager not found";
+
 const requireManagingRole = (callerRole?: string) => {
   if (!callerRole || !MANAGING_ROLES.includes(callerRole)) {
     throw new Error("Not authorized to manage workspaces");
@@ -331,10 +337,10 @@ export class WorkspaceService {
     // a member who unlocks gets their rooms because room_members grants those,
     // not because membership skipped the lock.
     const isSP = callerRole === Role.SuperAdmin;
-    const isCreator = workspace.created_by === callerId;
 
-    // The people who hand the key out never meet the lock, and see every room.
-    if (isSP || isCreator) {
+    // The people who hand the key out never meet the lock, and see every room:
+    // SP, the creator, and any AM the creator assigned as a manager.
+    if (isSP || (await this.isWorkspaceManager(callerId, callerRole, workspace))) {
       return { userId: callerId, role: callerRole, canManage: true };
     }
 
@@ -385,7 +391,9 @@ export class WorkspaceService {
     workspace: { id: string; created_by: string | null }
   ): Promise<boolean> {
     if (callerRole === Role.SuperAdmin) return true;
-    if (workspace.created_by === callerId) return true;
+    if (await this.isWorkspaceManager(callerId, callerRole, workspace)) {
+      return true;
+    }
     const memberOf = await workspaceRepository.workspaceIdsWithMembership(
       callerId
     );
@@ -420,11 +428,46 @@ export class WorkspaceService {
   ) {
     requireManagingRole(callerRole);
     if (callerRole === Role.SuperAdmin) return;
-    if (workspace.created_by !== callerId) {
+    if (!(await this.isWorkspaceManager(callerId, callerRole, workspace))) {
       // Another AM's workspace: missing, not forbidden. An AM has no more right
       // to learn it exists than anyone else does.
       throw new Error(NOT_FOUND);
     }
+  }
+
+  // The creator-only writes: deleting the workspace, and assigning or removing
+  // its managers. An assigned manager may do everything else, but cannot pass
+  // the role on or delete what they were handed.
+  //
+  // An assigned manager is told 403 rather than 404: they can already read the
+  // workspace, so hiding it from them would protect nothing. Anyone else gets
+  // the usual 404 from assertCanManage.
+  private async assertIsCreator(
+    callerId: string,
+    callerRole: string | undefined,
+    workspace: { id: string; created_by: string | null; visibility?: string }
+  ) {
+    await this.assertCanManage(callerId, callerRole, workspace);
+    if (callerRole === Role.SuperAdmin) return;
+    if (workspace.created_by !== callerId) {
+      throw new Error(ONLY_CREATOR);
+    }
+  }
+
+  // Creator, or an AM assigned through workspace_managers. SP is not decided
+  // here; every caller checks it first.
+  //
+  // An assignment only counts while the person still holds a managing role: an
+  // AM later demoted to USER keeps their workspace_managers row, but must not
+  // keep seeing every room and the key because of it.
+  private async isWorkspaceManager(
+    callerId: string,
+    callerRole: string | undefined,
+    workspace: { id: string; created_by: string | null }
+  ): Promise<boolean> {
+    if (workspace.created_by === callerId) return true;
+    if (!callerRole || !MANAGING_ROLES.includes(callerRole)) return false;
+    return await workspaceRepository.isAssignedManager(workspace.id, callerId);
   }
 
   private managingViewer(
@@ -489,7 +532,11 @@ export class WorkspaceService {
       // Two lookups the whole page shares rather than one per row. memberOf is
       // needed even for the SQL claim below, so it is fetched for everyone but
       // SP, who has no claim filter to build.
-      const [roomIds, unlocked, memberOf] = await Promise.all([
+      // managedIds only for a managing role, matching isWorkspaceManager: a
+      // demoted AM's leftover assignment rows grant nothing.
+      const canHoldAssignments =
+        !isSP && !!callerRole && MANAGING_ROLES.includes(callerRole);
+      const [roomIds, unlocked, memberOf, managedIds] = await Promise.all([
         isSP ? Promise.resolve([]) : workspaceRepository.roomIdsForUser(callerId),
         !isSP && sid
           ? workspaceRepository.unlockedWorkspaceIds(sid, callerId)
@@ -497,6 +544,9 @@ export class WorkspaceService {
         isSP
           ? Promise.resolve([])
           : workspaceRepository.workspaceIdsWithMembership(callerId),
+        canHoldAssignments
+          ? workspaceRepository.managedWorkspaceIds(callerId)
+          : Promise.resolve([] as string[]),
       ]);
 
       // ── The claim, in SQL ──
@@ -513,6 +563,7 @@ export class WorkspaceService {
             [Op.or]: [
               { created_by: callerId },
               { id: { [Op.in]: memberOf } },
+              { id: { [Op.in]: managedIds } },
             ],
           };
 
@@ -541,7 +592,9 @@ export class WorkspaceService {
 
       const data = await Promise.all(
         rows.map(async (row: any) => {
-          const isCreator = row.created_by === callerId || isSP;
+          // SP, the creator, or an assigned manager: past the lock, every room.
+          const isManager =
+            isSP || row.created_by === callerId || managedIds.includes(row.id);
           const isPublic = row.visibility === "public";
           const unlockedThisSession = unlocked.includes(row.id);
 
@@ -555,17 +608,17 @@ export class WorkspaceService {
           // The claim is no longer re-checked here; the WHERE above is the one
           // place it is decided. A stub still costs a page slot, which is
           // correct: it is a row the sidebar draws.
-          if (!isCreator && !isPublic && !unlockedThisSession) {
+          if (!isManager && !isPublic && !unlockedThisSession) {
             return this.lockedStub(row);
           }
 
           return await workspaceRepository.decorateListRow(row, {
             userId: callerId,
             role: callerRole,
-            canManage: isCreator,
-            // A creator (and SP) sees every room of the workspace; everyone
-            // else sees only the rooms they are in.
-            visibleRoomIds: isCreator ? undefined : roomIds,
+            canManage: isManager,
+            // A manager (creator, assigned AM, SP) sees every room of the
+            // workspace; everyone else sees only the rooms they are in.
+            visibleRoomIds: isManager ? undefined : roomIds,
           });
         })
       );
@@ -877,11 +930,136 @@ export class WorkspaceService {
       if (!id) throw new Error("Workspace id is required");
       const workspace = await workspaceRepository.findRaw(id);
       if (!workspace) throw new Error(NOT_FOUND);
-      await this.assertCanManage(callerId, callerRole, workspace);
+      // Creator (and SP) only: an assigned manager may not delete it.
+      await this.assertIsCreator(callerId, callerRole, workspace);
       return await workspaceRepository.remove(workspace);
     } catch (error) {
       throw error;
     }
+  }
+
+  // ── Assigned managers ─────────────────────────────────────────────────────
+  //
+  // An assigned AM gets the creator's rights over the workspace, apart from
+  // deleting it and assigning or removing managers. Those two stay with the
+  // creator and SP, so a manager cannot hand the workspace on further.
+
+  // GET /role-user/workspaces/managers?id=<workspaceId>
+  //
+  // Readable by anyone who can manage the workspace, assigned managers
+  // included, so they can see who else shares it.
+  public async listManagers(
+    callerId: string,
+    callerRole: string | undefined,
+    id: string
+  ) {
+    if (!id) throw new Error("Workspace id is required");
+    const workspace = await workspaceRepository.findRaw(id);
+    if (!workspace) throw new Error(NOT_FOUND);
+    await this.assertCanManage(callerId, callerRole, workspace);
+    return await workspaceRepository.listManagers(workspace.id);
+  }
+
+  // GET /role-user/workspaces/manager-candidates?id=<workspaceId>
+  //
+  // The picker's options. Creator-only like the write it feeds.
+  public async listManagerCandidates(
+    callerId: string,
+    callerRole: string | undefined,
+    id: string
+  ) {
+    if (!id) throw new Error("Workspace id is required");
+    const workspace = await workspaceRepository.findRaw(id);
+    if (!workspace) throw new Error(NOT_FOUND);
+    await this.assertIsCreator(callerId, callerRole, workspace);
+    return await workspaceRepository.managerCandidates(
+      workspace.id,
+      workspace.created_by
+    );
+  }
+
+  // POST /role-user/workspaces/managers  { id, user_ids }
+  //
+  // Validated in full before anything is written, so a bad id is a 400 with
+  // nothing assigned. The creator and anyone already assigned are skipped
+  // silently: re-sending the picker's whole selection is not an error.
+  public async assignManagers(
+    callerId: string,
+    callerRole: string | undefined,
+    body: any
+  ) {
+    const id = String(body?.id ?? "").trim();
+    if (!id) throw new Error("Workspace id is required");
+    const workspace = await workspaceRepository.findRaw(id);
+    if (!workspace) throw new Error(NOT_FOUND);
+    await this.assertIsCreator(callerId, callerRole, workspace);
+
+    const user_ids = normalizeIdList(body?.user_ids);
+    if (!user_ids.length) {
+      throw new Error("user_ids must name at least one AM");
+    }
+
+    const bad = await workspaceRepository.invalidManagerIds(user_ids);
+    if (bad.length) {
+      const first = bad[0];
+      throw new Error(
+        `user_ids[${first.index}] (${first.id}) cannot be assigned: ${first.reason}`
+      );
+    }
+
+    const fresh = await workspaceRepository.addManagers(
+      workspace.id,
+      user_ids.filter((uid) => uid !== workspace.created_by),
+      callerId
+    );
+
+    if (fresh.length) {
+      const [actor]: any[] = await workspaceRepository.usersLite([callerId]);
+      const actorName = actor?.fullName || "Someone";
+      await notificationRepo.createMany(fresh, {
+        type: "workspace_manager_assigned",
+        title: "Workspace Assigned",
+        message: `${actorName} assigned you to workspace "${workspace.name}".`,
+        // The WORKSPACE id, same as workspace_completed, so the client can open
+        // /{role}/workspace?ws=<reference_id> from it.
+        reference_id: workspace.id,
+      });
+    }
+
+    return await workspaceRepository.listManagers(workspace.id);
+  }
+
+  // DELETE /role-user/workspaces/managers
+  // POST   /role-user/workspaces/managers/unassign
+  //
+  // { id, user_id } for one, or { id, user_ids: [...] } for several. The
+  // controller merges query and body, so DELETE works either way.
+  //
+  // All-or-nothing: if ANY named id is not an assigned manager, nothing is
+  // removed and the 404 names it, so a stale list cannot half-apply.
+  public async removeManager(
+    callerId: string,
+    callerRole: string | undefined,
+    body: any
+  ) {
+    const id = String(body?.id ?? "").trim();
+    const user_ids = normalizeIdList(
+      body?.user_ids !== undefined ? body.user_ids : body?.user_id
+    );
+    if (!id) throw new Error("Workspace id is required");
+    if (!user_ids.length) throw new Error("User id is required");
+    const workspace = await workspaceRepository.findRaw(id);
+    if (!workspace) throw new Error(NOT_FOUND);
+    await this.assertIsCreator(callerId, callerRole, workspace);
+
+    const assigned = await workspaceRepository.managedUserIds(workspace.id);
+    const missing = user_ids.filter((uid) => !assigned.includes(uid));
+    if (missing.length) {
+      throw new Error(`${MANAGER_NOT_FOUND}: ${missing.join(", ")}`);
+    }
+
+    await workspaceRepository.removeManagers(workspace.id, user_ids);
+    return await workspaceRepository.listManagers(workspace.id);
   }
 
   // ── Rooms ─────────────────────────────────────────────────────────────────
