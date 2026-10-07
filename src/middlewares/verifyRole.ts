@@ -34,9 +34,6 @@ const authorize = (allowedRoles: Role[]) => {
           role: refreshDecoded.role,
           sid: refreshDecoded.sid as string | undefined,
         };
-        // The SAME sid is carried into the re-issued pair. Minting a new one
-        // here would silently end the session's workspace unlocks every time
-        // the 15-minute access token lapsed.
         const newTokens = await CredentialHashing.hashtoken(
           user.id,
           user.email,
@@ -57,7 +54,7 @@ const authorize = (allowedRoles: Role[]) => {
           sameSite: "none",
           path: "/",
         });
-        token = newTokens.accessToken;
+         newTokens.accessToken;
       }
 
       const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;

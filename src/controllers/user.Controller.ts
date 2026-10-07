@@ -1,7 +1,8 @@
 import { Request, Response, NextFunction } from "express";
 import { sendResponse } from "../utils/sendResponse";
 import HTTP_statusCode from "../Enums/statuCode";
-import { userService } from "../service/user.service";
+import { userService, BULK_TASK_LIMIT } from "../service/user.service";
+import { Role } from "../Enums/Role";
 import { TaskStatusUpdate } from "../types/task.types";
 import { superAdminService } from "../service/super-admin.service";
 import { LeaveService } from "../service/leave.service";
@@ -113,6 +114,53 @@ export class userController {
       sendResponse(res, statusCode, {
         success: false,
         message: error.message || "Task creation failed",
+      });
+    }
+  }
+  // POST /role-user/task/bulk — Excel import. Always 200 once the request
+  // itself is acceptable; per-row failures come back in `errors`.
+  public async bulkTask(req: Request, res: Response): Promise<any> {
+    try {
+      // SP/AM import for their team; USER/DEVLOPER for themselves only, which
+      // bulkAddTasks enforces per row. MG has no task-create screen.
+      const role = req.user?.role;
+      if (
+        role !== Role.SuperAdmin &&
+        role !== Role.Admin &&
+        role !== Role.User &&
+        role !== Role.Devloper
+      ) {
+        return sendResponse(res, HTTP_statusCode.NoAccess, {
+          success: false,
+          message: "Not allowed",
+        });
+      }
+      const tasks = req.body?.tasks;
+      if (!Array.isArray(tasks) || tasks.length === 0) {
+        return sendResponse(res, HTTP_statusCode.BadRequest, {
+          success: false,
+          message: "tasks must be a non-empty array",
+        });
+      }
+      if (tasks.length > BULK_TASK_LIMIT) {
+        return sendResponse(res, HTTP_statusCode.BadRequest, {
+          success: false,
+          message: `A maximum of ${BULK_TASK_LIMIT} tasks can be imported at once`,
+        });
+      }
+      const data = await UserService.bulkAddTasks(
+        { id: req.user!.id, role },
+        tasks
+      );
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: `${data.created} task(s) created, ${data.failed} failed`,
+        ...data,
+      });
+    } catch (error: any) {
+      sendResponse(res, HTTP_statusCode.InternalServerError, {
+        success: false,
+        message: error.message || "Bulk task import failed",
       });
     }
   }

@@ -588,6 +588,14 @@ export class UserRepository {
       // carry-over: that would accrue time from the moment of login, whether or
       // not the user actually resumed the work.
       if (start_time) taskData.start_time = new Date(start_time);
+      // Created already done. end_time is the finish moment here, so it is set
+      // after the deadline mirror above and does not touch due_date. No timer
+      // ran: total_seconds stays 0 and total_time reads "0m", as a stopped task
+      // with no time on it does.
+      if (data.completed_at) {
+        taskData.end_time = new Date(data.completed_at);
+        taskData.total_time = formatDuration(0);
+      }
       if (group_id) taskData.group_id = group_id;
       if (room_id) taskData.room_id = room_id;
       if (parent_id) taskData.parent_id = parent_id;

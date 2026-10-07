@@ -46,6 +46,12 @@ export interface AddTask {
   // two rooms of one project.
   room_id?: string | null;
   start_time?: string;
+  // The daily-log date the task is filed under — what /task-list?date= and the
+  // reports read. Defaults to today; set by the bulk import to back-fill.
+  log_date?: string;
+  // Set only when a task is created already completed (the bulk import). Goes
+  // into end_time as the finish moment, never mirrored into due_date.
+  completed_at?: string;
   parent_id?: string | null;
   tags?: unknown;
   subtasks?: SubTaskInput[];

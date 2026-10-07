@@ -20,6 +20,11 @@ import {
 import { Task } from "../connection/models/tasks";
 import { DailyTaskLog } from "../connection/models/daily_task_logs";
 import { Project } from "../connection/models/project";
+import { User } from "../connection/models/user";
+import { ProjectMember } from "../connection/models/project_member";
+import { Op } from "sequelize";
+import { Role } from "../Enums/Role";
+import { superAdminRepository } from "../repositories/super-admin.repository";
 import { DateRange, parseOptionalDateOnly } from "../utils/dateRange";
 import { Database } from "../connection/db/dbConnection";
 import { Transaction } from "sequelize";
@@ -36,6 +41,31 @@ const userRepository = new UserRepository();
 const taskGroupRepository = new TaskGroupRepository();
 const workspaceRepository = new WorkspaceRepository();
 const taskNotifications = new TaskNotificationService();
+const superAdminRepo = new superAdminRepository();
+
+// One row of POST /role-user/task/bulk. `row` is the Excel row number; it is
+// never stored, only echoed back against a failure.
+export interface BulkTaskRow {
+  row: number;
+  description: string;
+  task_date: string;
+  project?: string;
+  project_id?: string;
+  assigned_to: string;
+  priority: string;
+  status?: string;
+  start_date?: string;
+  due_date?: string;
+  end_time?: string;
+}
+
+export interface BulkTaskResult {
+  created: number;
+  failed: number;
+  errors: Array<{ row: unknown; message: string }>;
+}
+
+export const BULK_TASK_LIMIT = 500;
 
 // Raised when a subtask is started out of turn on a sequential parent. Carries
 // its own name so the controller can answer 409 without matching on the
@@ -514,7 +544,8 @@ export class userService {
         }
       }
 
-      const dailytaskTime = new Date().toISOString().split("T")[0];
+      const dailytaskTime =
+        data.log_date ?? new Date().toISOString().split("T")[0];
       let dailyTaskLog = await userRepository.findDailyTaskLog(
         dailytaskTime,
         created_by,
@@ -554,6 +585,7 @@ export class userService {
  
         start_time:
           taskStatus === "in_progress" ? new Date().toISOString() : undefined,
+        completed_at: data.completed_at,
         status: taskStatus,
         parent_id: data.parent_id ?? null,
         room_id: resolvedRoomId,
@@ -678,6 +710,188 @@ export class userService {
       console.error(" Error in addTask:", error.message);
       throw new Error(error.message || "Failed");
     }
+  }
+
+  // POST /role-user/task/bulk — the Excel import. Partial success by design:
+  // each row is validated and created on its own, and a bad row is reported
+  // back by its Excel `row` number rather than failing the batch.
+  //
+  // created_by is the caller, never the body. Every row goes through addTask,
+  // so a bulk-created task is indistinguishable from one made in the modal —
+  // same daily log, same normalisation, same notifications.
+  public async bulkAddTasks(
+    actor: { id: string; role: Role },
+    tasks: BulkTaskRow[]
+  ): Promise<BulkTaskResult> {
+    // Everything the per-row checks need, in three queries for the whole
+    // batch rather than three per row.
+    const projectIds = [
+      ...new Set(
+        tasks
+          .map((t) => t?.project_id ?? t?.project)
+          .filter((v): v is string => typeof v === "string" && !!v.trim())
+      ),
+    ];
+    const assigneeIds = [
+      ...new Set(
+        tasks
+          .map((t) => t?.assigned_to)
+          .filter((v): v is string => typeof v === "string" && !!v.trim())
+      ),
+    ];
+
+    // USER and DEVLOPER import their own work only, into projects they are on.
+    const selfOnly = actor.role !== Role.SuperAdmin && actor.role !== Role.Admin;
+
+    const [projects, users, domainPeerIds, memberships] = await Promise.all([
+      projectIds.length
+        ? Project.findAll({
+            where: { id: { [Op.in]: projectIds } },
+            attributes: ["id", "status"],
+            raw: true,
+          })
+        : Promise.resolve([] as any[]),
+      assigneeIds.length
+        ? User.findAll({
+            where: { id: { [Op.in]: assigneeIds } },
+            attributes: ["id", "isBlocked", "manager_id", "is_shared"],
+            raw: true,
+          })
+        : Promise.resolve([] as any[]),
+      actor.role === Role.Admin
+        ? superAdminRepo.getDomainPeerUserIds(actor.id)
+        : Promise.resolve([] as string[]),
+      // The same "assigned to the project" rule /list-projects shows them.
+      selfOnly && projectIds.length
+        ? ProjectMember.findAll({
+            where: { user_id: actor.id, project_id: { [Op.in]: projectIds } },
+            attributes: ["project_id"],
+            raw: true,
+          })
+        : Promise.resolve([] as any[]),
+    ]);
+    const myProjects = new Set(memberships.map((m: any) => String(m.project_id)));
+
+    const projectById = new Map(projects.map((p: any) => [String(p.id), p]));
+    const userById = new Map(users.map((u: any) => [String(u.id), u]));
+    const peers = new Set(domainPeerIds);
+    // Server date, the same UTC day addTask files today's tasks under.
+    const today = new Date().toISOString().split("T")[0];
+
+    // An AM's team is the same set /list-users shows them: people they manage,
+    // plus shared users in one of their domains. Themselves too — assigning
+    // your own work is not assigning outside your team.
+    const inTeam = (user: any): boolean =>
+      actor.role === Role.SuperAdmin ||
+      user.id === actor.id ||
+      user.manager_id === actor.id ||
+      (user.is_shared === true && peers.has(user.id));
+
+    const validate = (task: BulkTaskRow): string | null => {
+      if (!task || typeof task !== "object") return "Invalid task";
+
+      const description =
+        typeof task.description === "string" ? task.description.trim() : "";
+      if (!description) return "Description is required";
+
+      const projectId = task.project_id ?? task.project;
+      if (!projectId) return "Project is required";
+      const project: any = projectById.get(String(projectId));
+      if (!project) return "Project not found";
+      if (project.status !== "active") return "Project is not active";
+      if (selfOnly && !myProjects.has(String(projectId))) {
+        return "Not assigned to this project";
+      }
+
+      if (!task.assigned_to) return "Assignee is required";
+      if (selfOnly && task.assigned_to !== actor.id) {
+        return "You can only create tasks for yourself";
+      }
+      const user: any = userById.get(String(task.assigned_to));
+      if (!user) return "Assignee not found";
+      if (user.isBlocked) return "Assignee is blocked";
+      if (!inTeam(user)) return "User is not in your team";
+
+      const priority = String(task.priority ?? "").trim().toUpperCase();
+      if (!["LOW", "MEDIUM", "HIGH"].includes(priority)) {
+        return "Priority must be LOW, MEDIUM or HIGH";
+      }
+
+      const status = String(task.status ?? "").trim();
+      if (status !== "yet_to_start" && status !== "completed") {
+        return "Status must be yet_to_start or completed";
+      }
+
+      let taskDate: string | undefined;
+      let start: string | undefined;
+      let due: string | undefined;
+      try {
+        taskDate = parseOptionalDateOnly(task.task_date, "task_date");
+        start = parseOptionalDateOnly(task.start_date, "start_date");
+        due = parseOptionalDateOnly(task.due_date ?? task.end_time, "due_date");
+      } catch (error: any) {
+        return error?.message ?? "Invalid date";
+      }
+      if (!taskDate) return "Task date is required";
+      if (start && due && due < start) {
+        return "Due date cannot be before start date";
+      }
+      // Back-filling finished work is the point; inventing finished work in
+      // the future is not.
+      if (status === "completed" && taskDate >= today) {
+        return "Only past-dated tasks can be imported as completed";
+      }
+      return null;
+    };
+
+    const errors: Array<{ row: unknown; message: string }> = [];
+    let created = 0;
+
+    // Sequential, not Promise.all: rows for one assignee share a daily log,
+    // and creating them concurrently would race to create it twice.
+    for (const task of tasks) {
+      const row = task?.row;
+      const problem = validate(task);
+      if (problem) {
+        errors.push({ row, message: problem });
+        continue;
+      }
+
+      const projectId = String(task.project_id ?? task.project);
+      const taskDate = parseOptionalDateOnly(task.task_date, "task_date")!;
+      const due = parseOptionalDateOnly(
+        task.due_date ?? task.end_time,
+        "due_date"
+      );
+      const completed = task.status === "completed";
+
+      // Finished at the end of the day it was finished, never "now", or it
+      // reads as completed today. The due date when it is in the past, else
+      // the task date (already checked to be in the past).
+      const completedOn = due && due < today ? due : taskDate;
+      try {
+        await this.addTask({
+          created_by: actor.id,
+          assigned_to: task.assigned_to,
+          project_id: projectId,
+          description: task.description.trim(),
+          priority: task.priority,
+          status: completed ? "completed" : "yet_to_start",
+          log_date: taskDate,
+          start_date: task.start_date || undefined,
+          due_date: due,
+          // For an open task end_time is the deadline, as the manager create
+          // flow sends it. For a completed one it is the finish moment instead.
+          end_time: completed ? undefined : due,
+          completed_at: completed ? `${completedOn}T23:59:59` : undefined,
+        });
+        created++;
+      } catch (error: any) {
+        errors.push({ row, message: error?.message || "Task creation failed" });
+      }
+    }
+
+    return { created, failed: errors.length, errors };
   }
   // Returns the decorated read model rather than raw Task instances — see
   // utils/taskView. The shape is a superset of what it used to return.

@@ -17,6 +17,9 @@ export class UserRoute {
     // DEVLOPER only counts the projects they are on.
     this.router.get("/project-stats", roleGuards.allAcess, this.spController.projectStats);
     this.router.post("/task", roleGuards.allAcess, this.controller.task);
+    // Excel import. allAcess here and narrowed to SP/AM in the controller, so
+    // the 403 carries { message } like the rest of the import's errors.
+    this.router.post("/task/bulk", roleGuards.allAcess, this.controller.bulkTask);
     this.router.get("/task-list", roleGuards.allAcess, this.controller.taskList);
     this.router.patch("/task-lock", roleGuards.allAcess, this.controller.taskLock);
     this.router.patch("/updateTask", roleGuards.allAcess, this.controller.statusUpdate);

@@ -88,12 +88,7 @@ const workspaceOrder: any = [
 ];
 
 export class WorkspaceRepository {
-  // ── Create ────────────────────────────────────────────────────────────────
-  //
-  // The wizard writes once, at step 4, so the whole tree goes in or none of it
-  // does. A half-created workspace — rooms but no members, or a workspace with
-  // no rooms — is unreachable from the UI: no screen can finish it, and the
-  // user cannot retry without leaving the orphan behind.
+
   public async createTree(data: WorkspaceTreeInput) {
     const sequelize = Database.getSequelize();
     try {
