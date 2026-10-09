@@ -13,6 +13,7 @@ import {
 } from "../service/task-comment.service";
 import { NotificationRepository } from "../repositories/notification.repository";
 import { AttendanceRepository } from "../repositories/attendance.repository";
+import { AnnouncementRepository } from "../repositories/announcement.repository";
 import {
   DateRange,
   DateRangeError,
@@ -26,6 +27,7 @@ const taskGroupService = new TaskGroupService();
 const taskCommentService = new TaskCommentService();
 const notificationRepo = new NotificationRepository();
 const attendanceRepo = new AttendanceRepository();
+const announcementRepo = new AnnouncementRepository();
 
 const taskGroupErrorCode = (message?: string): HTTP_statusCode => {
   if (!message) return HTTP_statusCode.InternalServerError;
@@ -884,6 +886,84 @@ export class userController {
     }
   }
 
+
+  // SP's "Notify everyone" on What's New: one announcement row plus a
+  // release_announcement notification for every active non-SP user. Guarded
+  // allAcess on the route and narrowed here, so the 403 carries { message }.
+  public async createAnnouncement(req: Request, res: Response) {
+    try {
+      const user_id = req.user?.id;
+      if (!user_id) throw new Error("User not authenticated");
+      if (req.user?.role !== Role.SuperAdmin) {
+        sendResponse(res, HTTP_statusCode.NoAccess, {
+          success: false,
+          message: "Only SP can send announcements",
+        });
+        return;
+      }
+
+      const { version, title, message } = req.body ?? {};
+      const cleanVersion = typeof version === "string" ? version.trim() : "";
+      const cleanTitle = typeof title === "string" ? title.trim() : "";
+      if (!cleanVersion || cleanVersion.length > 20) {
+        sendResponse(res, HTTP_statusCode.BadRequest, {
+          success: false,
+          message: "version is required (at most 20 characters)",
+        });
+        return;
+      }
+      if (!cleanTitle || cleanTitle.length > 200) {
+        sendResponse(res, HTTP_statusCode.BadRequest, {
+          success: false,
+          message: "title is required (at most 200 characters)",
+        });
+        return;
+      }
+      if (message != null && typeof message !== "string") {
+        sendResponse(res, HTTP_statusCode.BadRequest, {
+          success: false,
+          message: "message must be a string",
+        });
+        return;
+      }
+
+      const result = await announcementRepo.createAndNotify({
+        version: cleanVersion,
+        title: cleanTitle,
+        message: message?.trim() || null,
+        created_by: user_id,
+      });
+
+      const { id, version: v, title: t, message: m, created_at } = result.announcement;
+      sendResponse(res, HTTP_statusCode.CREATED, {
+        success: true,
+        message: `Announcement sent to ${result.notified} users`,
+        data: { id, version: v, title: t, message: m, created_at, notified: result.notified },
+      });
+    } catch (error: any) {
+      sendResponse(res, HTTP_statusCode.InternalServerError, {
+        success: false,
+        message: error.message || "Failed to send announcement",
+      });
+    }
+  }
+
+  // The banner's source. data is null until SP has announced anything.
+  public async getLatestAnnouncement(req: Request, res: Response) {
+    try {
+      const latest = await announcementRepo.latest();
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: "Latest announcement fetched successfully",
+        data: latest ?? null,
+      });
+    } catch (error: any) {
+      sendResponse(res, HTTP_statusCode.InternalServerError, {
+        success: false,
+        message: error.message || "Failed to fetch latest announcement",
+      });
+    }
+  }
 
   public async getNotifications(req: Request, res: Response) {
     try {

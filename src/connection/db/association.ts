@@ -9,6 +9,7 @@ import initUserModel, { User } from "../models/user";
 import initLeaveModel, { Leave } from "../models/leave";
 import initLeaveBalanceModel, { LeaveBalance } from "../models/leave_balance";
 import initNotificationModel, { Notification } from "../models/notification";
+import initAnnouncementModel from "../models/announcement";
 import initAttendanceModel, { Attendance } from "../models/attendance";
 import initWorkspaceModel, { Workspace } from "../models/workspace";
 import initRoomModel, { Room } from "../models/room";
@@ -450,6 +451,7 @@ export class Associations {
     initLeaveModel(sequelize);
     initLeaveBalanceModel(sequelize);
     initNotificationModel(sequelize);
+    initAnnouncementModel(sequelize);
     initAttendanceModel(sequelize);
     initWorkspaceModel(sequelize);
     initRoomModel(sequelize);

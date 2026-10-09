@@ -139,6 +139,11 @@ export class UserRoute {
     this.router.patch("/notifications/read", roleGuards.allAcess, this.controller.markNotificationRead);
     this.router.patch("/notifications/read-all", roleGuards.allAcess, this.controller.markAllNotificationsRead);
 
+    // Release announcements (What's New). POST is SP only, narrowed in the
+    // controller; the notifications it creates flow through the routes above.
+    this.router.post("/announcements", roleGuards.allAcess, this.controller.createAnnouncement);
+    this.router.get("/announcements/latest", roleGuards.allAcess, this.controller.getLatestAnnouncement);
+
     // Attendance
     this.router.post("/attendance", this.controller.recordAttendance);
     this.router.get("/attendance/my", roleGuards.allAcess, this.controller.getMyAttendance);
