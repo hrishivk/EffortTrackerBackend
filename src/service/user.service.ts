@@ -897,7 +897,7 @@ export class userService {
   // utils/taskView. The shape is a superset of what it used to return.
   public async listTask(data: any): Promise<{ data: any[]; totalPages: number }> {
     try {
-      const { date, range, id, role, assigned_to, project, status, page = 1, limit = 10, minExtensions } = data;
+      const { date, range, id, role, assigned_to, project, status, page = 1, limit = 10, minExtensions, roomId } = data;
       const skip = (page - 1) * limit;
 
       // §0. Downstream, one date and an inclusive {from, to} window are the
@@ -919,7 +919,7 @@ export class userService {
       // quietly narrowing it to the caller's own tasks — the numbers on the
       // reports page would move for a reason nobody asked for.
       if (!date && projectId) {
-        const { tasks, totalCount } = await userRepository.tasksByProject(projectId, skip, limit, status, range, minExtensions);
+        const { tasks, totalCount } = await userRepository.tasksByProject(projectId, skip, limit, status, range, minExtensions, roomId);
         return {
           data: decorateTasks(tasks, await commentAuthorsFor(tasks)),
           totalPages: Math.ceil(totalCount / limit),
@@ -971,7 +971,8 @@ export class userService {
         limit,
         status,
         { parentIds, roomIds, roomLogIds },
-        minExtensions
+        minExtensions,
+        roomId
       );
 
       return {

@@ -829,7 +829,8 @@ export class UserRepository {
     limit?: number,
     status?: string | string[],
     scope?: { parentIds?: string[]; roomIds?: string[]; roomLogIds?: string[] },
-    minExtensions?: number
+    minExtensions?: number,
+    roomId?: string
   ): Promise<{ tasks: Task[]; totalCount: number }> {
     try {
       const idArray = Array.isArray(ids) ? ids : [ids];
@@ -863,6 +864,12 @@ export class UserRepository {
       };
       if (projectId) {
         whereClause.project_id = projectId;
+      }
+      // The room board. ANDed onto the visibility OR above, so it can only
+      // narrow what the caller was already allowed to see; findAndCountAll
+      // counts under the same where, so totalPages narrows with it.
+      if (roomId) {
+        whereClause.room_id = roomId;
       }
       const statuses = parseStatusFilter(status);
       if (statuses) {
@@ -936,11 +943,13 @@ export class UserRepository {
     limit?: number,
     status?: string | string[],
     window?: string | DateRange,
-    minExtensions?: number
+    minExtensions?: number,
+    roomId?: string
   ): Promise<{ tasks: Task[]; totalCount: number }> {
     try {
       const statuses = parseStatusFilter(status);
       const whereClause: any = { project_id: projectId, parent_id: null };
+      if (roomId) whereClause.room_id = roomId;
       // The date lives on the daily log, not on the task, so bounding by a
       // window turns the dailyLog include into an INNER JOIN. A task with no
       // daily log has no date and so cannot be placed in a window at all.

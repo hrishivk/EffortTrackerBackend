@@ -166,7 +166,22 @@ export class userController {
   }
   public async taskList(req: Request, res: Response) {
     try {
-      const { date, from, to, assigned_to, project, status, page = "1", limit = "10", extended, min_extensions } = req.query;
+      const { date, from, to, assigned_to, project, status, page = "1", limit = "10", extended, min_extensions, room_id } = req.query;
+
+      // The room board: `?room_id=` narrows the list to tasks created in that
+      // room. It narrows only — who may see what is still decided exactly as
+      // without it. Absent means no room step at all (the dashboard's My Tasks).
+      let roomId: string | undefined;
+      if (room_id !== undefined) {
+        if (typeof room_id !== "string" || !room_id.trim()) {
+          sendResponse(res, HTTP_statusCode.BadRequest, {
+            success: false,
+            message: "room_id must be a single non-empty value",
+          });
+          return;
+        }
+        roomId = room_id.trim();
+      }
 
       // "What has slipped, and why" in one request. Two spellings of one
       // filter: `?extended=true` is the common case and means at least one
@@ -207,6 +222,7 @@ export class userController {
         page: parseInt(page as string),
         limit: parseInt(limit as string),
         minExtensions,
+        roomId,
       });
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
