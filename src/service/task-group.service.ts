@@ -215,6 +215,7 @@ export class TaskGroupService {
       color?: unknown;
       position?: unknown;
       marks_status?: unknown;
+      with_default_lanes?: unknown;
       assigned_to?: string;
       room_id?: string | null;
     }
@@ -244,6 +245,7 @@ export class TaskGroupService {
         name,
         color: validateColor(data.color),
         marks_status: validateMarksStatus(data.marks_status),
+        with_default_lanes: data.with_default_lanes === true,
         position:
           data.position === undefined
             ? undefined

@@ -178,6 +178,7 @@ export class TaskGroupRepository {
         name: data.name,
         color: data.color ?? null,
         marks_status: data.marks_status ?? null,
+        with_default_lanes: data.with_default_lanes ?? false,
         position:
           data.position ?? (await this.nextPosition(data.user_id)),
       });

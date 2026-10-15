@@ -15,6 +15,9 @@ export class TaskGroup extends Model {
   public room_id!: string | null;
   // The status a card takes when moved into this lane; null = it keeps its own.
   public marks_status!: string | null;
+  // One of the owner's groups shown after the 4 default lanes ("Add after the
+  // 4 lanes") rather than with "Use only my groups".
+  public with_default_lanes!: boolean;
   public created_at!: Date;
   public updated_at!: Date;
 }
@@ -66,6 +69,11 @@ export const initTaskGroupModel = (sequelize: Sequelize) => {
       marks_status: {
         type: DataTypes.STRING(20),
         allowNull: true,
+      },
+      with_default_lanes: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
       },
       created_at: {
         type: DataTypes.DATE,

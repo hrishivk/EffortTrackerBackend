@@ -70,6 +70,7 @@ export interface TaskGroupInput {
   position?: number;
   room_id?: string | null;
   marks_status?: string | null;
+  with_default_lanes?: boolean;
 }
 
 export interface TaskGroupPatch {

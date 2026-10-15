@@ -644,13 +644,21 @@ export class userController {
   public async createTaskGroup(req: Request, res: Response) {
     try {
       const callerId = req.user?.id as string;
-      const { name, color, position, marks_status, assigned_to, room_id } =
-        req.body ?? {};
+      const {
+        name,
+        color,
+        position,
+        marks_status,
+        with_default_lanes,
+        assigned_to,
+        room_id,
+      } = req.body ?? {};
       const data = await taskGroupService.createGroup(callerId, req.user?.role, {
         name,
         color,
         position,
         marks_status,
+        with_default_lanes,
         assigned_to,
         room_id: optionalRoomId(room_id),
       });
