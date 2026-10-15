@@ -36,8 +36,15 @@ const SCOPED_WHERE = `
      --
      -- Both sides are slugged by the SAME expression, in SQL, so the two can
      -- never drift the way a JS-side slug and a SQL-side slug would.
+     --
+     -- A task parked in a custom lane now keeps its real status, so it is also
+     -- matched on group_id against every lane of that name.
      AND (:groupName IS NULL
-          OR ${STATUS_SLUG} = lower(replace(replace(:groupName, ' ', '_'), '-', '_')))`;
+          OR ${STATUS_SLUG} = lower(replace(replace(:groupName, ' ', '_'), '-', '_'))
+          OR t.group_id IN (
+               SELECT g.id FROM "tracker".task_groups g
+                WHERE lower(replace(replace(g.name, ' ', '_'), '-', '_'))
+                    = lower(replace(replace(:groupName, ' ', '_'), '-', '_'))))`;
 
 const SCOPED_ROWS = `${SCOPED_FROM}${SCOPED_WHERE}`;
 

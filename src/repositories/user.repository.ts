@@ -830,7 +830,8 @@ export class UserRepository {
     status?: string | string[],
     scope?: { parentIds?: string[]; roomIds?: string[]; roomLogIds?: string[] },
     minExtensions?: number,
-    roomId?: string
+    roomId?: string,
+    groupId?: string
   ): Promise<{ tasks: Task[]; totalCount: number }> {
     try {
       const idArray = Array.isArray(ids) ? ids : [ids];
@@ -870,6 +871,10 @@ export class UserRepository {
       // counts under the same where, so totalPages narrows with it.
       if (roomId) {
         whereClause.room_id = roomId;
+      }
+      // One lane of the board, narrowed the same way as roomId.
+      if (groupId) {
+        whereClause.group_id = groupId;
       }
       const statuses = parseStatusFilter(status);
       if (statuses) {
@@ -944,12 +949,14 @@ export class UserRepository {
     status?: string | string[],
     window?: string | DateRange,
     minExtensions?: number,
-    roomId?: string
+    roomId?: string,
+    groupId?: string
   ): Promise<{ tasks: Task[]; totalCount: number }> {
     try {
       const statuses = parseStatusFilter(status);
       const whereClause: any = { project_id: projectId, parent_id: null };
       if (roomId) whereClause.room_id = roomId;
+      if (groupId) whereClause.group_id = groupId;
       // The date lives on the daily log, not on the task, so bounding by a
       // window turns the dailyLog include into an INNER JOIN. A task with no
       // daily log has no date and so cannot be placed in a window at all.

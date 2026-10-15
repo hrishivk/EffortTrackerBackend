@@ -15,6 +15,7 @@ import initWorkspaceModel, { Workspace } from "../models/workspace";
 import initRoomModel, { Room } from "../models/room";
 import initRoomMemberModel, { RoomMember } from "../models/room_member";
 import initWorkspaceUnlockModel, { WorkspaceUnlock } from "../models/workspace_unlock";
+import initTaskGroupHideModel, { TaskGroupHide } from "../models/task_group_hide";
 import initWorkspaceManagerModel, { WorkspaceManager } from "../models/workspace_manager";
 import initTaskExtensionModel, { TaskExtension } from "../models/task_extension";
 import { Sequelize } from "sequelize";
@@ -224,6 +225,17 @@ export class Associations {
     User.hasMany(TaskGroup, {
       foreignKey: "user_id",
       as: "taskGroups",
+    });
+
+    // TaskGroupHide — a lane hidden on one user's board (own or one room)
+    TaskGroupHide.belongsTo(TaskGroup, {
+      foreignKey: "group_id",
+      as: "group",
+      onDelete: "CASCADE",
+    });
+    TaskGroup.hasMany(TaskGroupHide, {
+      foreignKey: "group_id",
+      as: "hides",
     });
 
     // Leave <-> User
@@ -459,5 +471,6 @@ export class Associations {
     initWorkspaceUnlockModel(sequelize);
     initWorkspaceManagerModel(sequelize);
     initTaskExtensionModel(sequelize);
+    initTaskGroupHideModel(sequelize);
   }
 }

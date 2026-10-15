@@ -68,12 +68,15 @@ export interface TaskGroupInput {
   name: string;
   color?: string | null;
   position?: number;
+  room_id?: string | null;
+  marks_status?: string | null;
 }
 
 export interface TaskGroupPatch {
   name?: string;
   color?: string | null;
   position?: number;
+  marks_status?: string | null;
 }
 
 // ── Room shared tasks ───────────────────────────────────────────────────────

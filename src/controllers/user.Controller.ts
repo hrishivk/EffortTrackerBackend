@@ -43,11 +43,25 @@ const taskGroupErrorCode = (message?: string): HTTP_statusCode => {
     message.startsWith("Group id") ||
     message.startsWith("Color must") ||
     message.startsWith("Position must") ||
+    message.startsWith("Hidden must") ||
+    message.startsWith("marks_status") ||
+    message.startsWith("room_id") ||
+    message === "Room not found" ||
+    message === "Group belongs to a different board" ||
     message.startsWith("Nothing to update") ||
     message.startsWith("assigned_to")
   )
     return HTTP_statusCode.BadRequest;
   return HTTP_statusCode.InternalServerError;
+};
+
+// `?room_id=` / body room_id: absent or empty is the own board (null).
+const optionalRoomId = (value: unknown): string | null => {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error("room_id must be a single non-empty value");
+  }
+  return value.trim();
 };
 
 
@@ -77,7 +91,7 @@ const taskCommentErrorCode = (message?: string): HTTP_statusCode => {
 export class userController {
   public async task(req: Request, res: Response) {
     try {
-      const { created_by, assigned_to, project, project_id, description, priority, end_time, start_date, due_date, status, tags, subtasks, parent_id, room_id, sequential } = req.body;
+      const { created_by, assigned_to, project, project_id, description, priority, end_time, start_date, due_date, status, tags, subtasks, parent_id, room_id, sequential, group_id, groupId } = req.body;
       const data = await UserService.addTask({
         created_by,
         assigned_to,
@@ -94,6 +108,7 @@ export class userController {
         parent_id,
         room_id,
         sequential,
+        group_id: group_id ?? groupId,
       });
       sendResponse(res, HTTP_statusCode.CREATED, {
         success: true,
@@ -106,6 +121,8 @@ export class userController {
       const isBadRequest =
         error.name === "SubtaskValidationError" ||
         error.message === "Room not found" ||
+        error.message === "Group not found" ||
+        error.message === "Group belongs to a different board" ||
         error.message === "Either project or project_id is required" ||
         String(error.message).startsWith("Project ");
       const statusCode = isLocked
@@ -168,7 +185,7 @@ export class userController {
   }
   public async taskList(req: Request, res: Response) {
     try {
-      const { date, from, to, assigned_to, project, status, page = "1", limit = "10", extended, min_extensions, room_id } = req.query;
+      const { date, from, to, assigned_to, project, status, page = "1", limit = "10", extended, min_extensions, room_id, group_id } = req.query;
 
       // The room board: `?room_id=` narrows the list to tasks created in that
       // room. It narrows only — who may see what is still decided exactly as
@@ -183,6 +200,21 @@ export class userController {
           return;
         }
         roomId = room_id.trim();
+      }
+
+      // One lane of the board: `?group_id=` narrows to the cards parked in
+      // that group. Like room_id it only narrows what the caller can already
+      // see, and combines with every other filter.
+      let groupId: string | undefined;
+      if (group_id !== undefined) {
+        if (typeof group_id !== "string" || !group_id.trim()) {
+          sendResponse(res, HTTP_statusCode.BadRequest, {
+            success: false,
+            message: "group_id must be a single non-empty value",
+          });
+          return;
+        }
+        groupId = group_id.trim();
       }
 
       // "What has slipped, and why" in one request. Two spellings of one
@@ -225,6 +257,7 @@ export class userController {
         limit: parseInt(limit as string),
         minExtensions,
         roomId,
+        groupId,
       });
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
@@ -263,6 +296,7 @@ export class userController {
       const payload: TaskStatusUpdate = { id };
       if ("status" in body) payload.status = body.status;
       if ("group_id" in body) payload.group_id = body.group_id;
+      else if ("groupId" in body) payload.group_id = body.groupId;
       // Key-presence, not truthiness, on every one of these: the service reads
       // `undefined` as "leave unchanged" and an explicit null on a date as
       // "clear it", and `if (body.start_date)` would collapse the two.
@@ -571,7 +605,8 @@ export class userController {
       const data = await taskGroupService.listGroups(
         callerId,
         req.user?.role,
-        assigned_to
+        assigned_to,
+        optionalRoomId(req.query.room_id)
       );
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
@@ -609,12 +644,15 @@ export class userController {
   public async createTaskGroup(req: Request, res: Response) {
     try {
       const callerId = req.user?.id as string;
-      const { name, color, position, assigned_to } = req.body ?? {};
+      const { name, color, position, marks_status, assigned_to, room_id } =
+        req.body ?? {};
       const data = await taskGroupService.createGroup(callerId, req.user?.role, {
         name,
         color,
         position,
+        marks_status,
         assigned_to,
+        room_id: optionalRoomId(room_id),
       });
       sendResponse(res, HTTP_statusCode.CREATED, {
         success: true,
@@ -634,10 +672,25 @@ export class userController {
       const callerId = req.user?.id as string;
       const id = req.query.id as string;
       const body = req.body ?? {};
-      const patch: { name?: unknown; color?: unknown; position?: unknown } = {};
+      const patch: {
+        name?: unknown;
+        color?: unknown;
+        position?: unknown;
+        marks_status?: unknown;
+        hidden?: unknown;
+        assigned_to?: string;
+        room_id?: string | null;
+      } = {};
       if ("name" in body) patch.name = body.name;
       if ("color" in body) patch.color = body.color;
       if ("position" in body) patch.position = body.position;
+      if ("marks_status" in body) patch.marks_status = body.marks_status;
+      if ("hidden" in body) {
+        // Hiding is per board: say which one (default the caller's own).
+        patch.hidden = body.hidden;
+        if (typeof body.assigned_to === "string") patch.assigned_to = body.assigned_to;
+        patch.room_id = optionalRoomId(body.room_id);
+      }
 
       const data = await taskGroupService.updateGroup(
         callerId,

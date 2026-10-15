@@ -295,15 +295,22 @@ export class userService {
             // One lookup per distinct status, not per task. A carried-forward
             // parent keeps its own status, so this is no longer always the
             // yet_to_start lane.
+            // Per room as well: a room task lands in the user's lanes for
+            // that room, an own-board task in their own-board lanes.
             const laneCache = new Map<string, any>();
-            const laneFor = async (status: string) => {
-              if (!laneCache.has(status)) {
+            const laneFor = async (status: string, roomId: string | null) => {
+              const key = `${status}|${roomId ?? ""}`;
+              if (!laneCache.has(key)) {
                 laneCache.set(
-                  status,
-                  await taskGroupRepository.findVisibleLaneForStatus(id, status)
+                  key,
+                  await taskGroupRepository.findVisibleLaneForStatus(
+                    id,
+                    status,
+                    roomId
+                  )
                 );
               }
-              return laneCache.get(status);
+              return laneCache.get(key);
             };
             const carriedProjectId =
               (previousLog as any).project_id ??
@@ -324,7 +331,10 @@ export class userService {
               const carriedStatus = isUnfinished(task)
                 ? CARRY_OVER_STATUS
                 : String(task.dataValues.status);
-              const carryLane = await laneFor(carriedStatus);
+              const carryLane = await laneFor(
+                carriedStatus,
+                task.dataValues.room_id ?? null
+              );
 
               // Every carried task lands in the lane matching the status it
               // arrives on, so nothing comes across without a lane — whether it
@@ -503,6 +513,24 @@ export class userService {
         resolvedRoomId = room.id;
       }
 
+      // Optional: the lane the card starts in, e.g. the first custom group on
+      // a board that has no status lanes. The status is stored as sent — a
+      // group no longer has to wait for completion. Same board rule as a drop.
+      let resolvedGroupId: string | null = null;
+      if (data.group_id) {
+        const group = await taskGroupRepository.findById(data.group_id);
+        if (!group) throw new Error("Group not found");
+        const boardOwner = assigned_to ?? created_by;
+        if (!group.is_shared && boardOwner && group.user_id !== boardOwner) {
+          throw new Error("Group belongs to a different board");
+        }
+        // A room's lane only takes that room's tasks.
+        if (group.room_id && group.room_id !== resolvedRoomId) {
+          throw new Error("Group belongs to a different board");
+        }
+        resolvedGroupId = group.id;
+      }
+
       // Every subtasks[].assigned_to must be an ACTIVE member of the room, and
       // the check runs BEFORE anything is written: a payload with one bad
       // assignee creates no task at all, rather than a main task with a hole
@@ -589,6 +617,7 @@ export class userService {
         status: taskStatus,
         parent_id: data.parent_id ?? null,
         room_id: resolvedRoomId,
+        group_id: resolvedGroupId,
         tags: data.tags,
         // Set on the MAIN task, so its children run in position order. Only
         // meaningful on a parent; harmless (and false) everywhere else.
@@ -897,7 +926,7 @@ export class userService {
   // utils/taskView. The shape is a superset of what it used to return.
   public async listTask(data: any): Promise<{ data: any[]; totalPages: number }> {
     try {
-      const { date, range, id, role, assigned_to, project, status, page = 1, limit = 10, minExtensions, roomId } = data;
+      const { date, range, id, role, assigned_to, project, status, page = 1, limit = 10, minExtensions, roomId, groupId } = data;
       const skip = (page - 1) * limit;
 
       // §0. Downstream, one date and an inclusive {from, to} window are the
@@ -919,7 +948,7 @@ export class userService {
       // quietly narrowing it to the caller's own tasks — the numbers on the
       // reports page would move for a reason nobody asked for.
       if (!date && projectId) {
-        const { tasks, totalCount } = await userRepository.tasksByProject(projectId, skip, limit, status, range, minExtensions, roomId);
+        const { tasks, totalCount } = await userRepository.tasksByProject(projectId, skip, limit, status, range, minExtensions, roomId, groupId);
         return {
           data: decorateTasks(tasks, await commentAuthorsFor(tasks)),
           totalPages: Math.ceil(totalCount / limit),
@@ -972,7 +1001,8 @@ export class userService {
         status,
         { parentIds, roomIds, roomLogIds },
         minExtensions,
-        roomId
+        roomId,
+        groupId
       );
 
       return {
@@ -1096,7 +1126,17 @@ export class userService {
         if (!group.is_shared && boardOwner && group.user_id !== boardOwner) {
           throw new Error("Group belongs to a different board");
         }
-        derivedStatus = statusForGroup(group.name);
+        // A room's lane only takes that room's tasks.
+        if (group.room_id && group.room_id !== ((task as any).room_id ?? null)) {
+          throw new Error("Group belongs to a different board");
+        }
+        // A lane whose name spells a status ("Completed") still sets that
+        // status, and so does a custom lane its owner set to mark one
+        // (marks_status, 029). Any other custom lane ("Production") is a
+        // place, not a state: the card keeps the status it had, so an
+        // unfinished task can sit there and is still carried over.
+        const mapped = group.marks_status || statusForGroup(group.name);
+        if (mapped && REAL_STATUSES.has(mapped)) derivedStatus = mapped;
       }
 
       if (status !== undefined) {
