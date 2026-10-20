@@ -10,6 +10,8 @@ import { Project } from "../connection/models/project";
 import { Domain } from "../connection/models/domain";
 import { ProjectMember } from "../connection/models/project_member";
 import { TaskGroup } from "../connection/models/task_group";
+import { Room } from "../connection/models/room";
+import { Workspace } from "../connection/models/workspace";
 import { TaskExtension } from "../connection/models/task_extension";
 import { Transaction } from "sequelize";
 import { DateRange } from "../utils/dateRange";
@@ -902,6 +904,20 @@ export class UserRepository {
             model: TaskGroup,
             as: "group",
             attributes: ["id", "name", "color", "position"],
+          },
+          // Where a room task lives, so a list across rooms (General) can name
+          // the room and its workspace without a call per workspace.
+          {
+            model: Room,
+            as: "room",
+            attributes: ["id", "name"],
+            include: [
+              {
+                model: Workspace,
+                as: "workspace",
+                attributes: ["id", "name"],
+              },
+            ],
           },
           // Nested rather than listed alongside: a subtask is not its own
           // board card.

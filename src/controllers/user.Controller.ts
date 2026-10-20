@@ -123,7 +123,7 @@ export class userController {
         error.message === "Room not found" ||
         error.message === "Group not found" ||
         error.message === "Group belongs to a different board" ||
-        error.message === "Either project or project_id is required" ||
+        error.message === "A room task needs a project" ||
         String(error.message).startsWith("Project ");
       const statusCode = isLocked
         ? HTTP_statusCode.locked

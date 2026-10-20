@@ -498,8 +498,10 @@ export class userService {
         }
         resolvedProjectId = projectRecord.id;
       }
-      if (!resolvedProjectId) {
-        throw new Error("Either project or project_id is required");
+      // A room belongs to a project's workspace, so its tasks need one. No room
+      // and no project is a General task: project_id stays null.
+      if (!resolvedProjectId && data.room_id) {
+        throw new Error("A room task needs a project");
       }
 
       // Optional. Validated up front so a stale room id names itself instead of
