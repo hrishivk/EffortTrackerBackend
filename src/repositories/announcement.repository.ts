@@ -18,9 +18,7 @@ export class AnnouncementRepository {
     }
   }
 
-  // The row and its notifications in one transaction, so a failure part-way
-  // leaves nothing behind. Every call sends: the same version can be
-  // announced again at any time, and each send is its own row.
+  
   public async createAndNotify(data: {
     version: string;
     title: string;
@@ -37,8 +35,6 @@ export class AnnouncementRepository {
           attributes: ["id"],
           transaction: t,
         });
-
-        // bulkCreate rather than a loop: this is every user in the system.
         if (recipients.length) {
           await Notification.bulkCreate(
             recipients.map((u: any) => ({

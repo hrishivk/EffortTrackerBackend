@@ -20,19 +20,11 @@ import {
   WorkspaceViewer,
 } from "../types/workspace.types";
 
-// Raised when the caller's own user row no longer exists. Mapped to a 401 by
-// the controller, because the only useful answer is "sign in again".
+
 export const STALE_SESSION =
   "Your session is no longer valid. Please sign in again";
 
-// Only `active` rows are membership. A pending request must never arrive as a
-// member — it would show up on the room card and in every assignee list built
-// from a room's people.
 const ACTIVE = "active";
-
-// The members embed, shared by every read. `through` carries `status` so the
-// join row can be filtered; its attributes stay hidden so the shape the client
-// receives is unchanged.
 const membersInclude = () => ({
   model: User,
   as: "members",
@@ -40,16 +32,6 @@ const membersInclude = () => ({
   through: { attributes: [], where: { status: ACTIVE } },
   required: false,
 });
-
-// What every single-workspace read embeds. `rooms[].members[]` travels with the
-// workspace on purpose: the Review step and any later workspace screen need
-// names, and returning bare ids would cost them an N+1 of user lookups.
-//
-// Every room is fetched; the caller's room scope is applied afterwards, in
-// decorateWorkspace. It is NOT a WHERE here on purpose: a WHERE is applied once
-// per query, and the list spans workspaces where the caller's scope differs —
-// creator of one (all rooms), plain member of another (one room). Scoping in
-// SQL blanked the rooms of a workspace the caller created but had not joined.
 const workspaceInclude = () => [
   {
     model: Project,
@@ -57,9 +39,6 @@ const workspaceInclude = () => [
     attributes: ["id", "name"],
     required: false,
   },
-  // Whoever marked the workspace completed. A join rather than a second query:
-  // completed_by on its own is a bare id, and the badge beside the status has
-  // to render a NAME. required: false because almost no workspace is completed.
   {
     model: User,
     as: "completedBy",
@@ -73,9 +52,6 @@ const workspaceInclude = () => [
     include: [membersInclude()],
   },
 ];
-
-// Rooms in board order, members alphabetically inside each — a stable order, so
-// the Review list does not reshuffle between reads.
 const workspaceOrder: any = [
   [{ model: Room, as: "rooms" }, "position", "ASC"],
   [{ model: Room, as: "rooms" }, "created_at", "ASC"],
@@ -110,8 +86,6 @@ export class WorkspaceRepository {
           const created = await Room.create(
             {
               workspace_id: workspace.id,
-              // Denormalised from the workspace — one project per workspace
-              // today, so every room inherits the same one.
               project_id: data.project_id,
               name: room.name,
               description: room.description ?? null,
@@ -122,9 +96,6 @@ export class WorkspaceRepository {
 
           if (room.member_ids.length > 0) {
             await RoomMember.bulkCreate(
-              // active, not pending: a manager placing someone in a room IS
-              // the approval. The wizard behaves exactly as it did before
-              // room_members gained a status.
               room.member_ids.map((user_id) => ({
                 room_id: created.id,
                 workspace_id: workspace.id,
@@ -135,10 +106,6 @@ export class WorkspaceRepository {
             );
           }
         }
-
-        // Re-read inside the transaction so the caller gets server ids and the
-        // embedded members in one round trip. The creator is by definition a
-        // manager of what they just made, and sees every room.
         return await Workspace.findByPk(workspace.id, {
           include: workspaceInclude(),
           order: workspaceOrder,
@@ -146,8 +113,6 @@ export class WorkspaceRepository {
         });
       });
 
-      // Decorated outside the transaction: the counts are reads, and holding
-      // the write transaction open for them buys nothing.
       return created
         ? await this.decorateWorkspace(created, {
             userId: data.created_by,
@@ -159,22 +124,10 @@ export class WorkspaceRepository {
     }
   }
 
-  // ── Read ──────────────────────────────────────────────────────────────────
 
-  // Decoration applied to every workspace the API returns.
-  //
-  // These are computed rather than stored, and they are the TRUE totals — not
-  // the totals of what the caller can see. A member scoped to one room still
-  // sees "Rooms 4 · Users 6" in the hero, which is what the design shows;
-  // scoping the counts as well would make the page claim the workspace is
-  // smaller than it is.
   private async decorateWorkspace(workspace: any, viewer: WorkspaceViewer) {
     const json = workspace.toJSON ? workspace.toJSON() : workspace;
-    // member_count is COUNT(DISTINCT user_id), NOT the number of membership
-    // rows. Now that one person can be in several rooms, the two differ: three
-    // people spread as 2 + 1 + 2 is five rows. The hero asks "how many people",
-    // so distinct is the right answer, and per-room counts summing to more than
-    // it is expected rather than a bug.
+
     const [roomCount, memberCount, taskCounts, completionNotice, managers] =
       await Promise.all([
         Room.count({ where: { workspace_id: json.id } }),
@@ -184,47 +137,30 @@ export class WorkspaceRepository {
           col: "user_id",
         }),
         this.taskCountsForWorkspace(json.id),
-        // Only for a completed workspace. On a list of mostly-uncompleted
-        // workspaces this costs nothing, which is what keeps it from being an
-        // N+1 — decorateWorkspace runs once per row.
+   
         json.completed_at ? this.completionNoticeFor(json.id) : null,
         this.managersLite(json.id),
       ]);
 
     if (Array.isArray(json.rooms)) {
-      // The room-level scope. undefined means "every room" (SP, or the
-      // creator); an array means only those. An EMPTY array is honoured as
-      // "no rooms" rather than falling through to "all rooms".
+
       if (viewer.visibleRoomIds) {
         const allowed = new Set(viewer.visibleRoomIds);
         json.rooms = json.rooms.filter((room: any) => allowed.has(room.id));
       }
       json.rooms = json.rooms.map((room: any) => ({
         ...room,
-        // Zero, not undefined, for a room nothing is linked to — the card
-        // renders "0 Tasks" rather than blanking the row.
         task_count: taskCounts.perRoom[room.id]?.total ?? 0,
         done_count: taskCounts.perRoom[room.id]?.done ?? 0,
       }));
     }
 
-    // `code` is the workspace KEY, and since it grants a session unlock it is a
-    // credential rather than a label. Only the people who are meant to hand it
-    // out receive it — SP and the creator.
-    //
-    // Hiding the copy button client-side stops it being DISPLAYED, not sent: it
-    // stayed in the JSON any member could read off the network tab. This is the
-    // same rule that keeps `code` out of the locked stub, extended to
-    // non-manager readers of an unlocked workspace.
+ 
     if (!viewer.canManage) {
       delete json.code;
     }
 
-    // The literal creator. Assigning or removing managers, and deleting the
-    // workspace, are creator-or-SP only (an assigned manager cannot pass the
-    // role on), so the client needs to tell the two apart. can_assign_managers
-    // is the gate for those controls, since SP may use them without being the
-    // creator.
+ 
     const isCreator = !!viewer.userId && json.created_by === viewer.userId;
 
     return {
@@ -232,31 +168,18 @@ export class WorkspaceRepository {
       managers,
       isCreator,
       can_assign_managers: viewer.role === "SP" || isCreator,
-      // Gates the copy-key button. A server decision, so an AM looking at
-      // another AM's workspace is told `false` instead of the client inferring
-      // `true` from its own role.
+  
       can_manage: viewer.canManage,
       room_count: roomCount,
       member_count: memberCount,
       task_count: taskCounts.total,
       done_count: taskCounts.done,
-      // Drives the icon beside the status. Null for anything not completed, so
-      // `completion_notice !== null` is the single test for "draw the badge".
+  
       completion_notice: completionNotice,
     };
   }
 
-  // Who was told about this workspace being completed, read back from the
-  // notifications that were actually raised.
-  //
-  // Read from `notifications` rather than stored on the workspace: those rows
-  // ARE the record of who was told, so a second copy on the workspace could
-  // disagree with them. It also means no new table and no new column.
-  //
-  // De-duplicated by user, newest first: the button can be pressed more than
-  // once (to tell one more person later), which leaves an earlier manager with
-  // two rows. The newest is kept, so `read` reflects the most recent notice
-  // rather than a stale one.
+
   public async completionNoticeFor(workspace_id: string) {
     const rows: any[] = await Notification.findAll({
       where: { type: "workspace_completed", reference_id: workspace_id },
@@ -279,12 +202,8 @@ export class WorkspaceRepository {
       const user: any = byId.get(row.user_id);
       notified.push({
         id: row.user_id,
-        // Null when the account has since been deleted — the notification row
-        // outlives the user, so the tooltip must cope with a missing name.
         fullName: user?.fullName ?? null,
         email: user?.email ?? null,
-        // Whether that manager has actually opened it, so the icon can
-        // distinguish "told" from "seen".
         read: row.is_read === true,
         notified_at: row.created_at,
       });
@@ -298,8 +217,7 @@ export class WorkspaceRepository {
     };
   }
 
-  // One grouped query per workspace rather than one per room. Rooms with no
-  // tasks are simply absent from the result and default to 0 above.
+
   private async taskCountsForWorkspace(workspace_id: string) {
     const sequelize = Database.getSequelize();
     const rows: any[] = await Task.findAll({
