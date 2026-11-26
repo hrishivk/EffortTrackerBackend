@@ -20,6 +20,9 @@ import {
   ProjectUpsertDTO,
 } from "../types/project.types";
 import { sendWelcomeEmail } from "../utils/mailer";
+import orgService, { onTimeRateOf } from "./org.service";
+import { todayDateOnly } from "../utils/dateRange";
+import { OrgRepository } from "../repositories/org.repository";
 
 // ── Project activity ────────────────────────────────────────────────────────
 
@@ -75,6 +78,12 @@ const emptyToNull = (value: unknown): string | null => {
 
 const SuperAdminRepository = new superAdminRepository();
 const userRepository = new UserRepository();
+const orgRepository = new OrgRepository();
+
+// Walks up the reporting line from `managerId`. If it reaches `userId`, making
+// userId report to managerId would close a loop (A reports to B, B reports to
+// A). Bounded, so a loop already in the data cannot spin forever.
+const MAX_REPORTING_DEPTH = 100;
 
 // An AM staffs their own team and nothing above it. Any other target role on
 // an edit is an escalation and is refused outright.
@@ -123,6 +132,56 @@ export class superAdminService {
     return domainIds;
   }
 
+  // The primary department (users.domain_id) on add-user / edit-user. An AM may
+  // only place someone in a department they are linked to; an SP anywhere.
+  // Returns the domain row so the caller can keep the legacy `department`
+  // string in step with it.
+  private async resolvePrimaryDomain(
+    domain_id: string,
+    currentUserId?: string,
+    currentUserRole?: string,
+  ): Promise<any> {
+    const domain = await SuperAdminRepository.findDomainById(domain_id);
+    if (!domain) throw new Error("Department not found");
+    if (currentUserRole === Role.Admin && currentUserId) {
+      const own = await SuperAdminRepository.getDomainIdsForUser(currentUserId);
+      if (!own.includes(domain_id)) {
+        throw new Error("You can only assign departments you are linked to");
+      }
+    }
+    return domain;
+  }
+
+  private async assertNoReportingLoop(userId: string, managerId: string) {
+    if (userId === managerId) {
+      throw new Error("A user cannot report to themselves");
+    }
+    let cursor: string | null = managerId;
+    for (let depth = 0; cursor && depth < MAX_REPORTING_DEPTH; depth++) {
+      const next: any = await SuperAdminRepository.findUserById(cursor);
+      cursor = next?.manager_id ?? null;
+      if (cursor === userId) {
+        throw new Error("This reporting manager would create a loop in the reporting line");
+      }
+    }
+  }
+
+  // ?domain_id= on the existing dashboard endpoints: checks the caller may see
+  // that department (403 otherwise) and returns its people. undefined when the
+  // param was not sent, so the endpoint stays exactly as it was.
+  public async departmentScope(
+    domain_id: unknown,
+    currentUserId?: string,
+    currentUserRole?: string,
+  ): Promise<string[] | undefined> {
+    if (domain_id === undefined || domain_id === "") return undefined;
+    const domain = await orgService.assertDomainAccess(
+      { id: currentUserId as string, role: currentUserRole },
+      domain_id,
+    );
+    return orgService.departmentUserIds(String(domain.id));
+  }
+
   public async addUser(data: AddUserDTO, manager_id?: string, creatorRole?: string): Promise<any> {
     const {
       fullName,
@@ -159,6 +218,15 @@ export class superAdminService {
       resolvedManagerId = requestedManagerId;
     }
     const isSharedUser = String(is_shared) === "true";
+
+    // Primary department by id. The legacy `department` string is still
+    // written — from the department's name when the form did not send one —
+    // until the web portal reads domain_id.
+    const primaryDomain = data.domain_id
+      ? await this.resolvePrimaryDomain(data.domain_id, manager_id, creatorRole)
+      : department
+        ? await SuperAdminRepository.findDomainByLooseName(department)
+        : null;
 
     if (!password) {
       throw new Error("Password is required.");
@@ -206,7 +274,8 @@ export class superAdminService {
         contact_number: contact_number?.trim(),
         date_of_birth: date_of_birth,
         blood_group: blood_group?.trim(),
-        department: department?.trim(),
+        department: department?.trim() || primaryDomain?.name,
+        domain_id: primaryDomain ? primaryDomain.id : null,
         work_schedule: work_schedule?.trim(),
         joining_date: joining_date,
         require_password_change: require_password_change ,
@@ -238,6 +307,73 @@ export class superAdminService {
       throw new Error(error.message || "Failed to create user.");
     }
   }
+  // The org-view fields of POST /domain, validated. Key-presence semantics:
+  // a key left out stays undefined and the column is untouched on edit; null
+  // or "" clears it. `domainId` is undefined on create.
+  private async resolveDomainTreeFields(
+    data: DomainUpsertDTO,
+    domainId: string | undefined,
+    assignedUserIds: string[],
+  ): Promise<{ parent_id?: string | null; head_user_id?: string | null; sort_order?: number }> {
+    const optionalId = (value: unknown): string | null | undefined => {
+      if (value === undefined) return undefined;
+      if (value === null) return null;
+      const trimmed = String(value).trim();
+      return trimmed === "" ? null : trimmed;
+    };
+    const out: { parent_id?: string | null; head_user_id?: string | null; sort_order?: number } = {};
+
+    if (data.sort_order !== undefined) {
+      const raw = data.sort_order === null || data.sort_order === "" ? 0 : Number(data.sort_order);
+      if (!Number.isInteger(raw)) throw new Error("sort_order must be a whole number");
+      out.sort_order = raw;
+    }
+
+    const parentId = optionalId(data.parent_id);
+    if (parentId !== undefined) {
+      if (parentId !== null) {
+        if (domainId && parentId === domainId) {
+          throw new Error("A department cannot be its own parent");
+        }
+        const parent = await SuperAdminRepository.findDomainById(parentId);
+        if (!parent) throw new Error("Parent department not found");
+        // Walk up from the new parent; meeting this department on the way
+        // means it would become its own ancestor.
+        let cursor: string | null = (parent as any).parent_id ?? null;
+        for (let depth = 0; domainId && cursor && depth < MAX_REPORTING_DEPTH; depth++) {
+          if (cursor === domainId) {
+            throw new Error("This parent would create a loop in the department tree");
+          }
+          const next: any = await SuperAdminRepository.findDomainById(cursor);
+          cursor = next?.parent_id ?? null;
+        }
+      }
+      out.parent_id = parentId;
+    }
+
+    const headId = optionalId(data.head_user_id);
+    if (headId !== undefined) {
+      if (headId !== null) {
+        const head = await orgRepository.findUser(headId);
+        if (!head) throw new Error("Department head not found");
+        // Belongs = primary department is this one, or linked to it. On create
+        // nobody can be in the department yet except the people being linked
+        // to it in this same request.
+        const belongs =
+          assignedUserIds.includes(headId) ||
+          (!!domainId &&
+            (head.domain_id === domainId ||
+              (await SuperAdminRepository.getDomainIdsForUser(headId)).includes(domainId)));
+        if (!belongs) {
+          throw new Error("The department head must belong to the department");
+        }
+      }
+      out.head_user_id = headId;
+    }
+
+    return out;
+  }
+
   public async upsertDomain(
     data: DomainUpsertDTO,
     currentUserId: string,
@@ -268,9 +404,18 @@ export class superAdminService {
           }
         }
 
+        // AMs linked in this same save count as belonging, so "link and make
+        // head" works in one request. Validated before anything is written.
+        const linkingIds =
+          currentUserRole === "SP" && Array.isArray(assigned_am_ids)
+            ? assigned_am_ids.filter(Boolean)
+            : [];
+        const treeFields = await this.resolveDomainTreeFields(data, userId, linkingIds);
+
         const updated = await SuperAdminRepository.updateDomain(userId, {
           name: name.trim(),
           description: description?.trim(),
+          ...treeFields,
         });
 
         if (currentUserRole === "SP" && Array.isArray(assigned_am_ids)) {
@@ -290,12 +435,6 @@ export class superAdminService {
         throw new Error("Domain with this name already exists");
       }
 
-      const created = await SuperAdminRepository.createDomain({
-        name: name.trim(),
-        description: description?.trim(),
-        created_by: currentUserId,
-      });
-
       // Build assignment list based on role
       const assignments: string[] = [];
       if (currentUserRole === "SP") {
@@ -306,6 +445,16 @@ export class superAdminService {
         // AM cannot assign other AMs; auto-assign self
         assignments.push(currentUserId);
       }
+
+      // Before the insert, so a bad parent or head creates nothing.
+      const treeFields = await this.resolveDomainTreeFields(data, undefined, assignments);
+
+      const created = await SuperAdminRepository.createDomain({
+        name: name.trim(),
+        description: description?.trim(),
+        created_by: currentUserId,
+        ...treeFields,
+      });
 
       if (assignments.length > 0) {
         await SuperAdminRepository.assignDomainMembers(created.id, assignments);
@@ -348,16 +497,48 @@ export class superAdminService {
   // managers see the user in their team management tab, so the choice has to
   // reach beyond the creator's own domains. resolveSharedUserDomains skips its
   // ownership check for shared users to match - keep the two in step.
+  //
+  // Each row also carries the org-view fields: parentId, head, employeeCount
+  // (primary members plus linked shared users — the same set the org tree
+  // counts) and activeProjectCount. Added alongside the existing keys, so the
+  // web portal's reads of this list are unchanged.
   public async getAllDomain(
     currentUserId: string,
     currentUserRole: string,
     isShared = false,
   ) {
     try {
-      if (currentUserRole === Role.SuperAdmin || (currentUserRole === Role.Admin && isShared)) {
-        return await SuperAdminRepository.listAllDomain();
-      }
-      return await SuperAdminRepository.listDomainsForUser(currentUserId);
+      const domains =
+        currentUserRole === Role.SuperAdmin || (currentUserRole === Role.Admin && isShared)
+          ? await SuperAdminRepository.listAllDomain()
+          : await SuperAdminRepository.listDomainsForUser(currentUserId);
+
+      const [memberships, activeProjects] = await Promise.all([
+        orgRepository.memberships(),
+        orgRepository.activeProjectCounts(),
+      ]);
+      const employeeCount = new Map<string, number>();
+      memberships.forEach((m) => {
+        employeeCount.set(m.domain_id, (employeeCount.get(m.domain_id) ?? 0) + 1);
+      });
+
+      return domains.map((domain: any) => {
+        const plain = domain.get({ plain: true });
+        return {
+          ...plain,
+          parentId: plain.parent_id ?? null,
+          head: plain.head
+            ? {
+                id: plain.head.id,
+                fullName: plain.head.fullName ?? null,
+                jobTitle: plain.head.job_title ?? null,
+                avatar: null,
+              }
+            : null,
+          employeeCount: employeeCount.get(String(plain.id)) ?? 0,
+          activeProjectCount: activeProjects.get(String(plain.id)) ?? 0,
+        };
+      });
     } catch (error) {
       throw error;
     }
@@ -424,9 +605,16 @@ export class superAdminService {
       throw error;
     }
   }
-  public async countTask(role: string, date: string) {
+  public async countTask(
+    role: string,
+    date: string,
+    scope: { userIds?: string[]; range?: { from: string; to: string } } = {},
+  ) {
     try {
-      return await SuperAdminRepository.fetchTaskCount(role, date);
+      return await SuperAdminRepository.fetchTaskCount(role, date, {
+        ...scope,
+        today: todayDateOnly(),
+      });
     } catch (error) {
       throw error;
     }
@@ -438,23 +626,41 @@ export class superAdminService {
       throw error;
     }
   }
-  public async getTeamPerformance() {
+  // Each row gains overdue and onTimeRate, from the same grouped query the org
+  // view uses, so the two never disagree.
+  public async getTeamPerformance(
+    scope: { userIds?: string[]; range?: { from: string; to: string } } = {},
+  ) {
     try {
-      return await SuperAdminRepository.fetchTeamPerformance();
+      const rows = await SuperAdminRepository.fetchTeamPerformance(scope);
+      const measures = await orgRepository.personMeasures({
+        window: { from: scope.range?.from ?? null, to: scope.range?.to ?? null },
+        userIds: rows.map((row: any) => row.userId),
+        today: todayDateOnly(),
+      });
+      const byUser = new Map(measures.map((m) => [m.user_id, m]));
+      return rows.map((row: any) => {
+        const m = byUser.get(row.userId);
+        return {
+          ...row,
+          overdue: m?.overdue ?? 0,
+          onTimeRate: m ? onTimeRateOf(m) : 0,
+        };
+      });
     } catch (error) {
       throw error;
     }
   }
-  public async getRecentActivity(limit?: number) {
+  public async getRecentActivity(limit?: number, userIds?: string[]) {
     try {
-      return await SuperAdminRepository.fetchRecentActivity(limit);
+      return await SuperAdminRepository.fetchRecentActivity(limit, userIds);
     } catch (error) {
       throw error;
     }
   }
-  public async getUpcomingDeadlines(limit?: number) {
+  public async getUpcomingDeadlines(limit?: number, userIds?: string[]) {
     try {
-      return await SuperAdminRepository.fetchUpcomingDeadlines(limit);
+      return await SuperAdminRepository.fetchUpcomingDeadlines(limit, userIds);
     } catch (error) {
       throw error;
     }
@@ -480,9 +686,9 @@ export class superAdminService {
       throw error;
     }
   }
-  public async getProjectStats(userId?: string, userRole?: string) {
+  public async getProjectStats(userId?: string, userRole?: string, domainId?: string) {
     try {
-      return await SuperAdminRepository.getProjectStats(userId, userRole);
+      return await SuperAdminRepository.getProjectStats(userId, userRole, domainId);
     } catch (error) {
       throw error;
     }
@@ -523,6 +729,8 @@ export class superAdminService {
     project_id?: string;
     manager_id?: string;
     is_shared?: string;
+    department_user_ids?: string[];
+    reports_to?: string;
     page: number;
     limit: number;
   }) {
@@ -617,6 +825,7 @@ export class superAdminService {
         const nextManagerId = String(data.manager_id).trim();
         const targetManager = await SuperAdminRepository.findUserById(nextManagerId);
         if (!targetManager) throw new Error("Reporting manager not found");
+        await this.assertNoReportingLoop(id, nextManagerId);
         update.manager_id = nextManagerId;
       }
 
@@ -674,6 +883,36 @@ export class superAdminService {
           : null;
       }
       if (data.department !== undefined) update.department = data.department;
+
+      // --- primary department -----------------------------------------------
+      // domain_id sent: validated (an AM only into their own departments) and
+      // the legacy department string follows it unless the form sent its own.
+      // Only the string sent (the web portal): domain_id is re-matched from it
+      // by name, so the two cannot drift apart — but only when the string
+      // actually CHANGED. The edit form echoes every field back on save, and an
+      // unchanged free-text department must not wipe a domain_id set in the app.
+      if (data.domain_id !== undefined) {
+        if (data.domain_id === null) {
+          update.domain_id = null;
+        } else if (data.domain_id !== existing.domain_id) {
+          const domain = await this.resolvePrimaryDomain(
+            data.domain_id,
+            currentUserId,
+            currentUserRole,
+          );
+          update.domain_id = domain.id;
+          if (data.department === undefined) update.department = domain.name;
+        }
+      } else if (
+        data.department !== undefined &&
+        (data.department ?? null) !== (existing.department ?? null)
+      ) {
+        const matched = data.department
+          ? await SuperAdminRepository.findDomainByLooseName(data.department)
+          : null;
+        update.domain_id = matched ? matched.id : null;
+      }
+
       if (data.work_schedule !== undefined) update.work_schedule = data.work_schedule;
       if (data.joining_date !== undefined) update.joining_date = data.joining_date;
       if (data.require_password_change !== undefined) {

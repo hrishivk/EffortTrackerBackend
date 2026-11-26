@@ -131,12 +131,15 @@ export class superAdminRepository {
     return visibility;
   }
 
-  public async getProjectStats(userId?: string, userRole?: string) {
+  public async getProjectStats(userId?: string, userRole?: string, domainId?: string) {
     try {
       // Same visibility rules as the project list, so the cards and the table
-      // can never disagree about which projects are in scope.
-      const projectWhereClause =
-        (await this.buildProjectVisibilityWhere(userId, userRole)) || {};
+      // can never disagree about which projects are in scope. ?domain_id= is
+      // ANDed on top, so it only ever narrows what the caller could see.
+      const visibility = await this.buildProjectVisibilityWhere(userId, userRole);
+      const projectWhereClause: any = domainId
+        ? { [Op.and]: [visibility ?? {}, { domain_id: domainId }] }
+        : visibility || {};
 
       // Get filtered project IDs
       const filteredProjects = await Project.findAll({
@@ -225,6 +228,11 @@ export class superAdminRepository {
           },
           {
             model: User,
+            as: "head",
+            attributes: ["id", "fullName", "job_title"],
+          },
+          {
+            model: User,
             as: "assignedUsers",
             attributes: ["id", "fullName"],
             through: { attributes: [] },
@@ -245,6 +253,11 @@ export class superAdminRepository {
             model: User,
             as: "creator",
             attributes: ["id", "fullName"],
+          },
+          {
+            model: User,
+            as: "head",
+            attributes: ["id", "fullName", "job_title"],
           },
           {
             model: User,
@@ -479,11 +492,16 @@ export class superAdminRepository {
     project_id?: string;
     manager_id?: string;
     is_shared?: string;
+    // ?domain_id=, resolved by the service to the department's people.
+    department_user_ids?: string[];
+    // ?manager_id= — direct reports of this person. A different thing from
+    // `manager_id` above, which is the AM caller's own team scoping.
+    reports_to?: string;
     page: number;
     limit: number;
   }) {
     try {
-      const { search, role, isBlocked, project_id, manager_id, is_shared, page, limit } = filters;
+      const { search, role, isBlocked, project_id, manager_id, is_shared, department_user_ids, reports_to, page, limit } = filters;
       const whereClause: any = {
         id: { [Op.ne]: "2f3xfkSN5zHdYa5" },
         role: { [Op.ne]: "SP" },
@@ -534,6 +552,16 @@ export class superAdminRepository {
         whereClause.is_shared = is_shared === "true";
       }
 
+      // The org view's two narrowings, ANDed on top of everything above like
+      // is_shared, so neither can widen what an AM already sees.
+      if (department_user_ids || reports_to) {
+        whereClause[Op.and] = [
+          ...((whereClause[Op.and] as any[]) ?? []),
+          ...(department_user_ids ? [{ id: { [Op.in]: department_user_ids } }] : []),
+          ...(reports_to ? [{ manager_id: reports_to }] : []),
+        ];
+      }
+
       const offset = (page - 1) * limit;
 
       const includeClause: any[] = [
@@ -554,6 +582,19 @@ export class superAdminRepository {
           as: "assignedDomains",
           attributes: ["id", "name"],
           through: { attributes: [] },
+          required: false,
+        },
+        // The names behind domain_id and manager_id, for the org view.
+        {
+          model: Domain,
+          as: "primaryDomain",
+          attributes: ["id", "name"],
+          required: false,
+        },
+        {
+          model: User,
+          as: "manager",
+          attributes: ["id", "fullName"],
           required: false,
         },
       ];
@@ -713,6 +754,18 @@ export class superAdminRepository {
             through: { attributes: [] },
             required: false,
           },
+          {
+            model: Domain,
+            as: "primaryDomain",
+            attributes: ["id", "name"],
+            required: false,
+          },
+          {
+            model: User,
+            as: "manager",
+            attributes: ["id", "fullName"],
+            required: false,
+          },
         ],
       });
     } catch (error) {
@@ -720,15 +773,41 @@ export class superAdminRepository {
     }
   }
 
-  public async fetchTaskCount(role: string, date: string) {
+  // `scope` is the org view's narrowing: tasks assigned to `userIds`
+  // (?domain_id=) and/or logged inside `range` (?from=&to=). Either one turns
+  // the dailyLog join on; with neither, the query is the company-wide,
+  // all-time count it always was.
+  public async fetchTaskCount(
+    role: string,
+    date: string,
+    scope: { userIds?: string[]; range?: { from: string; to: string }; today?: string } = {},
+  ) {
     try {
+      const logWhere: any = {};
+      if (scope.userIds) logWhere.assigned_to = { [Op.in]: scope.userIds };
+      if (scope.range) logWhere.date = { [Op.between]: [scope.range.from, scope.range.to] };
+      const include: any[] =
+        scope.userIds || scope.range
+          ? [{ model: DailyTaskLog, as: "dailyLog", attributes: [], required: true, where: logWhere }]
+          : [];
+
       const statusCounts: any = await Task.findAll({
         attributes: [
-          "status",
-          [Sequelize.fn("COUNT", Sequelize.col("status")), "count"],
+          [col("Task.status"), "status"],
+          [Sequelize.fn("COUNT", Sequelize.col("Task.id")), "count"],
         ],
-        group: ["status"],
+        include,
+        group: [col("Task.status")],
         raw: true,
+      });
+
+      // Past due_date and not completed, inside the same scope.
+      const overdue = await Task.count({
+        where: {
+          due_date: { [Op.lt]: scope.today ?? new Date().toISOString().slice(0, 10) },
+          status: { [Op.ne]: "completed" },
+        },
+        include,
       });
 
       const counts: Record<string, number> = {
@@ -753,7 +832,7 @@ export class superAdminRepository {
               fn(
                 "SUM",
                 literal(
-                  `EXTRACT(EPOCH FROM ("end_time" - "start_time")) / 3600`
+                  `EXTRACT(EPOCH FROM ("Task"."end_time" - "Task"."start_time")) / 3600`
                 )
               ),
               0
@@ -765,6 +844,7 @@ export class superAdminRepository {
           start_time: { [Op.ne]: null },
           end_time: { [Op.ne]: null },
         },
+        include,
         raw: true,
       });
 
@@ -779,6 +859,7 @@ export class superAdminRepository {
         inProgress: counts.in_progress,
         completed: counts.completed,
         blocked: counts.blocked,
+        overdue,
         totalHours,
       };
     } catch (error) {
@@ -817,17 +898,25 @@ export class superAdminRepository {
     }
   }
 
-  public async fetchTeamPerformance() {
+  // `scope` narrows to people (?domain_id=) and to a logged-date window
+  // (?from=&to=). With neither, this is the company-wide all-time table it was.
+  public async fetchTeamPerformance(
+    scope: { userIds?: string[]; range?: { from: string; to: string } } = {},
+  ) {
     try {
       // Get all non-SP, non-blocked users
       const users = await User.findAll({
         where: {
           role: { [Op.ne]: "SP" },
           isBlocked: false,
+          ...(scope.userIds ? { id: { [Op.in]: scope.userIds } } : {}),
         },
         attributes: ["id", "fullName"],
         raw: true,
       });
+      const logDate = scope.range
+        ? { date: { [Op.between]: [scope.range.from, scope.range.to] } }
+        : {};
 
       if (users.length === 0) return [];
 
@@ -859,7 +948,7 @@ export class superAdminRepository {
             model: DailyTaskLog,
             as: "dailyLog",
             attributes: [],
-            where: { assigned_to: { [Op.in]: userIds } },
+            where: { assigned_to: { [Op.in]: userIds }, ...logDate },
           },
         ],
         group: [col("dailyLog.assigned_to"), "Task.status"],
@@ -903,7 +992,7 @@ export class superAdminRepository {
             model: DailyTaskLog,
             as: "dailyLog",
             attributes: [],
-            where: { assigned_to: { [Op.in]: userIds } },
+            where: { assigned_to: { [Op.in]: userIds }, ...logDate },
           },
         ],
         where: {
@@ -943,8 +1032,11 @@ export class superAdminRepository {
     }
   }
 
-  public async fetchRecentActivity(limit: number = 10) {
+  // `userIds` narrows to tasks assigned to these people (?domain_id=). Absent
+  // means company-wide, exactly as before.
+  public async fetchRecentActivity(limit: number = 10, userIds?: string[]) {
     try {
+      if (userIds && !userIds.length) return [];
       const recentTasks: any = await Task.findAll({
         attributes: ["id", "description", "status", "updated_at"],
         include: [
@@ -952,6 +1044,9 @@ export class superAdminRepository {
             model: DailyTaskLog,
             as: "dailyLog",
             attributes: ["assigned_to"],
+            ...(userIds
+              ? { required: true, where: { assigned_to: { [Op.in]: userIds } } }
+              : {}),
             include: [
               {
                 model: User,
@@ -985,8 +1080,9 @@ export class superAdminRepository {
     }
   }
 
-  public async fetchUpcomingDeadlines(limit: number = 10) {
+  public async fetchUpcomingDeadlines(limit: number = 10, userIds?: string[]) {
     try {
+      if (userIds && !userIds.length) return [];
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
@@ -1002,6 +1098,17 @@ export class superAdminRepository {
             as: "project",
             attributes: ["name"],
           },
+          ...(userIds
+            ? [
+                {
+                  model: DailyTaskLog,
+                  as: "dailyLog",
+                  attributes: [],
+                  required: true,
+                  where: { assigned_to: { [Op.in]: userIds } },
+                },
+              ]
+            : []),
         ],
         order: [["end_time", "ASC"]],
         limit,
@@ -1203,7 +1310,31 @@ export class superAdminRepository {
     }
   }
 
-  public async updateDomain(id: string, data: { name?: string; description?: string }) {
+  // The backfill's matching rule (migration 031): case and surrounding spaces
+  // ignored. Lets a caller that only sends the legacy department string —
+  // the web portal — still land the user in the right department by id.
+  public async findDomainByLooseName(name: string) {
+    try {
+      const wanted = String(name ?? "").trim().toLowerCase();
+      if (!wanted) return null;
+      return await Domain.findOne({
+        where: where(fn("lower", fn("btrim", col("name"))), wanted),
+      });
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  public async updateDomain(
+    id: string,
+    data: {
+      name?: string;
+      description?: string;
+      parent_id?: string | null;
+      head_user_id?: string | null;
+      sort_order?: number;
+    },
+  ) {
     try {
       const domain = await Domain.findByPk(id);
       if (!domain) throw new Error("Domain not found");
@@ -1500,7 +1631,7 @@ export class superAdminRepository {
         id, fullName, email, password, role, manager_id, is_shared,
         job_title, employee_id, contact_number, date_of_birth,
         blood_group, department, work_schedule, joining_date,
-        require_password_change,
+        require_password_change, domain_id,
       } = data;
 
       const user = await User.findByPk(id);
@@ -1522,6 +1653,8 @@ export class superAdminRepository {
       if (date_of_birth !== undefined) updateLoad.date_of_birth = date_of_birth;
       if (blood_group !== undefined) updateLoad.blood_group = blood_group;
       if (department !== undefined) updateLoad.department = department;
+      // Unlike manager_id, null here is a real request: "no primary department".
+      if (domain_id !== undefined) updateLoad.domain_id = domain_id;
       if (work_schedule !== undefined) updateLoad.work_schedule = work_schedule;
       if (joining_date !== undefined) updateLoad.joining_date = joining_date;
       if (require_password_change !== undefined) updateLoad.require_password_change = require_password_change;

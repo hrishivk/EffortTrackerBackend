@@ -7,6 +7,8 @@ import { TaskStatusUpdate } from "../types/task.types";
 import { superAdminService } from "../service/super-admin.service";
 import { LeaveService } from "../service/leave.service";
 import { TaskGroupService } from "../service/task-group.service";
+import orgService from "../service/org.service";
+import { orgErrorCode } from "./org.controller";
 import {
   COMMENT_ERRORS,
   TaskCommentService,
@@ -251,6 +253,25 @@ export class userController {
         throw error;
       }
 
+      // ?domain_id= narrows to tasks assigned to that department's people. It
+      // only narrows: who may see what is decided exactly as without it. The
+      // department itself is checked like every org-view read (403 outside an
+      // AM's departments, and for USER/DEVLOPER).
+      let assigneeIds: string[] | undefined;
+      if (req.query.domain_id !== undefined && req.query.domain_id !== "") {
+        try {
+          const domain = await orgService.assertDomainAccess({ id: id as string, role }, req.query.domain_id);
+          assigneeIds = await orgService.departmentUserIds(String(domain.id));
+        } catch (error: unknown) {
+          const code = orgErrorCode(error);
+          if (code) {
+            sendResponse(res, code, { success: false, message: (error as Error).message });
+            return;
+          }
+          throw error;
+        }
+      }
+
       const result = await UserService.listTask({
         date: day, range, id, role, assigned_to, project, status,
         page: parseInt(page as string),
@@ -258,6 +279,7 @@ export class userController {
         minExtensions,
         roomId,
         groupId,
+        assigneeIds,
       });
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,

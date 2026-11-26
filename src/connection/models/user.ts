@@ -19,6 +19,7 @@ export class User
   public date_of_birth!: string | null;
   public blood_group!: string | null;
   public department!: string | null;
+  public domain_id!: string | null;
   public work_schedule!: string | null;
   public joining_date!: string | null;
   public require_password_change!: boolean;
@@ -81,9 +82,19 @@ export const initUserModel = (sequelize: Sequelize) => {
         type: DataTypes.STRING(10),
         allowNull: true,
       },
+      // Legacy, kept read-only-ish while the web portal still reads it: the
+      // service keeps writing it alongside domain_id. See migration 031.
       department: {
         type: DataTypes.STRING(100),
         allowNull: true,
+      },
+      // The primary department, by id. Shared users may leave it NULL and
+      // reach their departments through domain_assignments instead.
+      domain_id: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+        references: { model: "domains", key: "id" },
+        onDelete: "SET NULL",
       },
       work_schedule: {
         type: DataTypes.STRING(50),

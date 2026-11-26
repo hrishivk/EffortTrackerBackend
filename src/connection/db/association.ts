@@ -45,6 +45,35 @@ export class Associations {
       as: "createdDomains",
     });
 
+    // Domain <-> User (primary department, by id — migration 031)
+    User.belongsTo(Domain, {
+      foreignKey: "domain_id",
+      as: "primaryDomain",
+      constraints: false,
+    });
+    Domain.hasMany(User, {
+      foreignKey: "domain_id",
+      as: "primaryMembers",
+      constraints: false,
+    });
+
+    // Domain -> head of department, and the department tree
+    Domain.belongsTo(User, {
+      foreignKey: "head_user_id",
+      as: "head",
+      constraints: false,
+    });
+    Domain.belongsTo(Domain, {
+      foreignKey: "parent_id",
+      as: "parent",
+      constraints: false,
+    });
+    Domain.hasMany(Domain, {
+      foreignKey: "parent_id",
+      as: "children",
+      constraints: false,
+    });
+
     // Domain <-> User (many-to-many through DomainAssignment)
     Domain.belongsToMany(User, {
       through: DomainAssignment,

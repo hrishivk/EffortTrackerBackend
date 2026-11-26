@@ -19,6 +19,11 @@ export const toUserDetailsView = (user: any) => {
     isBlocked: plain.isBlocked ?? false,
     is_shared: plain.is_shared ?? false,
     manager_id: plain.manager_id ?? null,
+    managerName: plain.manager?.fullName ?? null,
+    // The primary department by id. `department` below is the legacy name
+    // string, kept until the web portal reads domain_id.
+    domain_id: plain.domain_id ?? null,
+    domainName: plain.primaryDomain?.name ?? null,
 
     contactNumber: plain.contact_number ?? null,
     jobTitle: plain.job_title ?? null,

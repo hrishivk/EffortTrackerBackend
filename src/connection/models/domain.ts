@@ -9,6 +9,9 @@ export class Domain
   public name!: string;
   public description!: string;
   public created_by!: string | null;
+  public head_user_id!: string | null;
+  public parent_id!: string | null;
+  public sort_order!: number;
 }
 
 export const initDomain = (sequelize: Sequelize) => {
@@ -38,6 +41,27 @@ export const initDomain = (sequelize: Sequelize) => {
           key: "id",
         },
         onDelete: "SET NULL",
+      },
+      // Shown on the department card. Must belong to the department — checked
+      // in the service, not by a constraint. See migration 031.
+      head_user_id: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+        references: { model: "users", key: "id" },
+        onDelete: "SET NULL",
+      },
+      // Sub-departments (Engineering -> Mobile). SET NULL, so deleting a
+      // parent lifts its children to the top level instead of deleting them.
+      parent_id: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+        references: { model: "domains", key: "id" },
+        onDelete: "SET NULL",
+      },
+      sort_order: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
       },
     },
     {

@@ -2,11 +2,13 @@ import express, { Router } from "express";
 import { SuperAdminController } from "../controllers/super-admin.controller";
 import { roleGuards } from "../middlewares/verifyRole";
 import { ReportController } from "../controllers/report.controller";
+import { OrgController } from "../controllers/org.controller";
 
 export class SuperAdminRoute {
   private router: Router = express.Router();
   private controller = new SuperAdminController();
   private reportController = new ReportController();
+  private orgController = new OrgController();
 
   constructor() {
     this.router.post("/add-user", roleGuards.AdminOrSuperAdmin, this.controller.user);
@@ -38,6 +40,15 @@ export class SuperAdminRoute {
     this.router.get("/team-performance", roleGuards.AdminOrSuperAdmin, this.controller.getTeamPerformance);
     this.router.get("/recent-activity", roleGuards.AdminOrSuperAdmin, this.controller.getRecentActivity);
     this.router.get("/upcoming-deadlines", roleGuards.AdminOrSuperAdmin, this.controller.getUpcomingDeadlines);
+
+    // The org view (SuperAdmin panel): departments as a tree, then each
+    // department's people, tasks, workload and progress. SP and AM only — an
+    // AM is narrowed to their own departments inside OrgService.
+    this.router.get("/org-tree", roleGuards.AdminOrSuperAdmin, this.orgController.orgTree);
+    this.router.get("/department-overview", roleGuards.AdminOrSuperAdmin, this.orgController.departmentOverview);
+    this.router.get("/department-members", roleGuards.AdminOrSuperAdmin, this.orgController.departmentMembers);
+    this.router.get("/department-tasks", roleGuards.AdminOrSuperAdmin, this.orgController.departmentTasks);
+    this.router.get("/employee-summary", roleGuards.AdminOrSuperAdmin, this.orgController.employeeSummary);
 
     // The same two report routes as /role-am, so an SP opens the page at the
     // prefix their screens already use. Identical handlers: the prefix says

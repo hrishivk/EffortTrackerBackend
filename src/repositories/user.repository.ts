@@ -24,8 +24,6 @@ const VALID_TASK_STATUSES: TaskStatus[] = [
   "completed",
   "blocked",
 ];
-
-// in_progress first, then yet_to_start, so a task that was started shows on top
 const TASK_STATUS_ORDER = Sequelize.literal(
   `CASE "Task"."status"
      WHEN 'in_progress' THEN 1
@@ -36,11 +34,7 @@ const TASK_STATUS_ORDER = Sequelize.literal(
    END`
 );
 
-// Since 009 status is free text and may hold a group name, so the ?status=
-// filter can no longer whitelist the four enum values — doing so made an
-// unknown value return EVERY task instead of none. Compare slugified on both
-// sides so "Production", "production" and "Yet to Start" all match what is
-// stored ("Production", "yet_to_start").
+
 const STATUS_SLUG = Sequelize.fn(
   "lower",
   Sequelize.fn(
@@ -63,15 +57,9 @@ export const parseStatusFilter = (
   return cleaned.length ? Array.from(new Set(cleaned)) : undefined;
 };
 
-// A single working session is capped. When a task is left in in_progress
-// overnight nobody knows when the person actually stopped, and without a cap the
-// frontend counts now - start_time forever — one task had reached 858 hours.
+
 const MAX_TAGS = 20;
 const MAX_TAG_LENGTH = 50;
-
-// Accepts the array the client sends, or a comma-separated string, and returns
-// clean labels: trimmed, blanks dropped, de-duplicated case-insensitively
-// (first spelling wins), each capped in length and the list capped in count.
 export const normalizeTags = (input?: unknown): string[] => {
   if (input === undefined || input === null) return [];
   const raw = Array.isArray(input)
@@ -113,6 +101,21 @@ const dailyLogDateWhere = (window?: string | DateRange): any => {
     return trimmed ? trimmed.split("T")[0] : undefined;
   }
   return { [Op.between]: [window.from, window.to] };
+};
+
+// `?domain_id=` on the task lists: only tasks whose daily log belongs to one of
+// these people. A subquery on daily_log_id rather than a `$dailyLog.x$` where,
+// because the subtask include makes Sequelize wrap the paginated query in a
+// subselect that cannot see the joined dailyLog alias. An empty list matches
+// nothing, which is the right answer for a department with no people.
+const assignedToAny = (userIds: string[]): any => {
+  const escape = (value: string) => Task.sequelize!.escape(value);
+  const list = userIds.length ? userIds.map(escape).join(", ") : "NULL";
+  return Sequelize.literal(
+    `"Task"."daily_log_id" IN (
+       SELECT l.id FROM tracker.daily_task_logs l WHERE l.assigned_to IN (${list})
+     )`
+  );
 };
 
 // "Show me what has slipped" — §4 of the extensions request.
@@ -338,7 +341,8 @@ export class UserRepository {
               {
                 model: User,
                 as: "assignedUser",
-                attributes: ["id", "fullName", "email"],
+                // domain_id: the assignee's department, for the org view.
+                attributes: ["id", "fullName", "email", "domain_id"],
               },
             ],
           },
@@ -379,7 +383,8 @@ export class UserRepository {
               {
                 model: User,
                 as: "assignedUser",
-                attributes: ["id", "fullName", "email"],
+                // domain_id: the assignee's department, for the org view.
+                attributes: ["id", "fullName", "email", "domain_id"],
               },
             ],
           },
@@ -833,7 +838,8 @@ export class UserRepository {
     scope?: { parentIds?: string[]; roomIds?: string[]; roomLogIds?: string[] },
     minExtensions?: number,
     roomId?: string,
-    groupId?: string
+    groupId?: string,
+    assigneeIds?: string[]
   ): Promise<{ tasks: Task[]; totalCount: number }> {
     try {
       const idArray = Array.isArray(ids) ? ids : [ids];
@@ -891,6 +897,13 @@ export class UserRepository {
           extendedAtLeast(minExtensions),
         ];
       }
+      // ?domain_id=, narrowing only, like roomId.
+      if (assigneeIds) {
+        whereClause[Op.and] = [
+          ...((whereClause[Op.and] as any[]) ?? []),
+          assignedToAny(assigneeIds),
+        ];
+      }
 
       const queryOptions: any = {
         where: whereClause,
@@ -931,7 +944,8 @@ export class UserRepository {
               {
                 model: User,
                 as: "assignedUser",
-                attributes: ["id", "fullName", "email"],
+                // domain_id: the assignee's department, for the org view.
+                attributes: ["id", "fullName", "email", "domain_id"],
               },
               {
                 model: User,
@@ -966,7 +980,8 @@ export class UserRepository {
     window?: string | DateRange,
     minExtensions?: number,
     roomId?: string,
-    groupId?: string
+    groupId?: string,
+    assigneeIds?: string[]
   ): Promise<{ tasks: Task[]; totalCount: number }> {
     try {
       const statuses = parseStatusFilter(status);
@@ -986,6 +1001,12 @@ export class UserRepository {
         whereClause[Op.and] = [
           ...((whereClause[Op.and] as any[]) ?? []),
           extendedAtLeast(minExtensions),
+        ];
+      }
+      if (assigneeIds) {
+        whereClause[Op.and] = [
+          ...((whereClause[Op.and] as any[]) ?? []),
+          assignedToAny(assigneeIds),
         ];
       }
 
@@ -1017,7 +1038,7 @@ export class UserRepository {
               {
                 model: User,
                 as: "assignedUser",
-                attributes: ["id", "fullName", "email"],
+                attributes: ["id", "fullName", "email", "domain_id"],
               },
               {
                 model: User,
@@ -1034,6 +1055,100 @@ export class UserRepository {
       if (limit !== undefined) queryOptions.limit = limit;
 
       const { count, rows } = await Task.findAndCountAll(queryOptions);
+      return { tasks: rows, totalCount: count };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // GET /role-sp/department-tasks: every top-level task whose daily log belongs
+  // to one of `assigneeIds` inside the window. Same includes as todayTask, so
+  // the row is the task-list item the app's table already renders. Authorising
+  // the department is the caller's job; this only reads.
+  public async departmentTasks(input: {
+    assigneeIds: string[];
+    window: DateRange;
+    offset: number;
+    limit: number;
+    status?: string | string[];
+    priority?: string;
+    projectId?: string;
+    overdueBefore?: string;
+  }): Promise<{ tasks: Task[]; totalCount: number }> {
+    try {
+      if (!input.assigneeIds.length) return { tasks: [], totalCount: 0 };
+      const escape = (value: string) => Task.sequelize!.escape(value);
+      const and: any[] = [
+        Sequelize.literal(
+          `"Task"."daily_log_id" IN (
+             SELECT l.id FROM tracker.daily_task_logs l
+              WHERE l.assigned_to IN (${input.assigneeIds.map(escape).join(", ")})
+                AND l.date BETWEEN ${escape(input.window.from)} AND ${escape(input.window.to)}
+           )`
+        ),
+      ];
+      const statuses = parseStatusFilter(input.status);
+      if (statuses) and.push(Sequelize.where(STATUS_SLUG, { [Op.in]: statuses }));
+      // "Past due_date and not completed" — the same rule as the overdue counts.
+      if (input.overdueBefore) {
+        and.push({ due_date: { [Op.lt]: input.overdueBefore } });
+        and.push(Sequelize.where(STATUS_SLUG, { [Op.ne]: "completed" }));
+      }
+
+      const whereClause: any = { parent_id: null, [Op.and]: and };
+      if (input.priority) whereClause.priority = input.priority;
+      if (input.projectId) whereClause.project_id = input.projectId;
+
+      const { count, rows } = await Task.findAndCountAll({
+        where: whereClause,
+        include: [
+          {
+            model: Project,
+            as: "project",
+            attributes: ["id", "name"],
+          },
+          {
+            model: TaskGroup,
+            as: "group",
+            attributes: ["id", "name", "color", "position"],
+          },
+          {
+            model: Room,
+            as: "room",
+            attributes: ["id", "name"],
+            include: [
+              {
+                model: Workspace,
+                as: "workspace",
+                attributes: ["id", "name"],
+              },
+            ],
+          },
+          subtaskInclude(),
+          extensionInclude(),
+          {
+            model: DailyTaskLog,
+            as: "dailyLog",
+            attributes: ["id", "created_by", "assigned_to", "date"],
+            include: [
+              {
+                model: User,
+                as: "assignedUser",
+                attributes: ["id", "fullName", "email", "domain_id"],
+              },
+              {
+                model: User,
+                as: "creator",
+                attributes: ["id", "fullName", "email"],
+              },
+            ],
+          },
+        ],
+        order: [TASK_STATUS_ORDER, ["created_at", "DESC"]],
+        offset: input.offset,
+        limit: input.limit,
+        distinct: true,
+      });
       return { tasks: rows, totalCount: count };
     } catch (error) {
       throw error;

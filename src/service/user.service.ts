@@ -149,7 +149,7 @@ const coerceBoolean = (value: unknown): boolean =>
 
 // Resolves the comment authors for a page of tasks in one query, so the names
 // cost one round trip for the whole response rather than one per comment.
-const commentAuthorsFor = async (
+export const commentAuthorsFor = async (
   rows: any[]
 ): Promise<Map<string, UserLite>> => {
   const ids = collectCommentUserIds(rows);
@@ -928,7 +928,7 @@ export class userService {
   // utils/taskView. The shape is a superset of what it used to return.
   public async listTask(data: any): Promise<{ data: any[]; totalPages: number }> {
     try {
-      const { date, range, id, role, assigned_to, project, status, page = 1, limit = 10, minExtensions, roomId, groupId } = data;
+      const { date, range, id, role, assigned_to, project, status, page = 1, limit = 10, minExtensions, roomId, groupId, assigneeIds } = data;
       const skip = (page - 1) * limit;
 
       // §0. Downstream, one date and an inclusive {from, to} window are the
@@ -950,7 +950,7 @@ export class userService {
       // quietly narrowing it to the caller's own tasks — the numbers on the
       // reports page would move for a reason nobody asked for.
       if (!date && projectId) {
-        const { tasks, totalCount } = await userRepository.tasksByProject(projectId, skip, limit, status, range, minExtensions, roomId, groupId);
+        const { tasks, totalCount } = await userRepository.tasksByProject(projectId, skip, limit, status, range, minExtensions, roomId, groupId, assigneeIds);
         return {
           data: decorateTasks(tasks, await commentAuthorsFor(tasks)),
           totalPages: Math.ceil(totalCount / limit),
@@ -1004,7 +1004,8 @@ export class userService {
         { parentIds, roomIds, roomLogIds },
         minExtensions,
         roomId,
-        groupId
+        groupId,
+        assigneeIds
       );
 
       return {

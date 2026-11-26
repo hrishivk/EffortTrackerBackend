@@ -15,6 +15,7 @@ export interface userAttributes {
   date_of_birth?: string | null;
   blood_group?: string | null;
   department?: string | null;
+  domain_id?: string | null;
   work_schedule?: string | null;
   joining_date?: string | null;
   require_password_change?: boolean;
@@ -91,6 +92,9 @@ export interface AddUserDTO {
   work_schedule?: string | null;
   joining_date?: string | null;
   require_password_change?: boolean;
+  // The primary department (domains.id). Validated against the caller's
+  // departments for an AM; the department name string is written alongside.
+  domain_id?: string | null;
   projects?: string;
   // Domains a shared user (is_shared) is linked to. Accepts an array or a
   // comma-separated string; the managers of these domains get to see the user.
@@ -124,6 +128,8 @@ export interface EditUserDTO {
   // Full replacement, not a delta: "1,4,9" makes the project set exactly
   // {1,4,9} and "" detaches from all. Absent leaves the set untouched.
   projects?: string;
+  // The primary department. null (sent as "") clears it.
+  domain_id?: string | null;
   domain_ids?: string | string[];
 }
 
@@ -143,6 +149,7 @@ export type userInput = Optional<
   | "date_of_birth"
   | "blood_group"
   | "department"
+  | "domain_id"
   | "work_schedule"
   | "joining_date"
   | "require_password_change"

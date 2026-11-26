@@ -10,6 +10,7 @@ import {
 } from "../repositories/report.repository";
 import { superAdminRepository } from "../repositories/super-admin.repository";
 import { TaskGroupRepository } from "../repositories/task-group.repository";
+import orgService, { OrgAccessError, OrgNotFoundError } from "./org.service";
 import {
   DateRange,
   eachDate,
@@ -229,12 +230,25 @@ export class ReportService {
 
     if (department_id) {
       // Narrows the MEMBER SET, not the tasks: a department is a group of
-      // people here (domain_assignments), so "the design department's report"
-      // is those people's work wherever they did it. Narrowing by project is
-      // what ?project_id= is for, and the two compose.
-      const inDepartment = new Set(
-        await directory.userIdsInDepartment(department_id)
-      );
+      // people, so "the design department's report" is those people's work
+      // wherever they did it. Narrowing by project is what ?project_id= is
+      // for, and the two compose.
+      //
+      // The org view's rules: an AM outside the department gets 403 rather
+      // than an empty report, and "the department's people" is the same set
+      // the org tree counts — primary members plus linked shared users — with
+      // the old domain_assignments links kept so no existing report shrinks.
+      try {
+        await orgService.assertDomainAccess(viewer, department_id);
+      } catch (error) {
+        if (error instanceof OrgAccessError) throw new ReportAccessError(error.message);
+        if (error instanceof OrgNotFoundError) throw new ReportNotFoundError(error.message);
+        throw error;
+      }
+      const inDepartment = new Set([
+        ...(await directory.userIdsInDepartment(department_id)),
+        ...(await orgService.departmentUserIds(department_id)),
+      ]);
       members = members.filter((member) => inDepartment.has(member.id));
     }
 

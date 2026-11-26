@@ -7,8 +7,15 @@ import { superAdminService } from "../service/super-admin.service";
 import _ from "lodash";
 import { normalizeUserPayload } from "../utils/userPayload";
 import { toUserDetailsView } from "../utils/userDetailsView";
+import { orgErrorCode } from "./org.controller";
+import { parseDateRange } from "../utils/dateRange";
 
 const SuperAdminService = new superAdminService();
+
+// from + to on the dashboard tiles: both or neither, like task-list. Neither
+// leaves the tile on its old all-time reading.
+const optionalRange = (from: unknown, to: unknown) =>
+  from === undefined && to === undefined ? undefined : parseDateRange(from, to);
 const EDIT_USER_STATUS: Record<string, number> = {
   "User id is required": HTTP_statusCode.BadRequest,
   "User not found": HTTP_statusCode.NotFound,
@@ -30,6 +37,10 @@ const EDIT_USER_STATUS: Record<string, number> = {
   "An admin manager cannot change the reporting manager": HTTP_statusCode.NoAccess,
   "An admin manager cannot change the shared flag": HTTP_statusCode.NoAccess,
   "Reporting manager not found": HTTP_statusCode.BadRequest,
+  "A user cannot report to themselves": HTTP_statusCode.BadRequest,
+  "This reporting manager would create a loop in the reporting line": HTTP_statusCode.BadRequest,
+  "Department not found": HTTP_statusCode.BadRequest,
+  "You can only assign departments you are linked to": HTTP_statusCode.NoAccess,
 
   "Password is required.": HTTP_statusCode.BadRequest,
 
@@ -77,6 +88,8 @@ export class SuperAdminController {
         "A shared user must be assigned to at least one domain": HTTP_statusCode.BadRequest,
         "You can only assign domains you are linked to": HTTP_statusCode.NoAccess,
         "Reporting manager not found": HTTP_statusCode.BadRequest,
+        "Department not found": HTTP_statusCode.BadRequest,
+        "You can only assign departments you are linked to": HTTP_statusCode.NoAccess,
       };
       sendResponse(res, statusMap[error.message] || HTTP_statusCode.InternalServerError, {
         success: false,
@@ -87,11 +100,24 @@ export class SuperAdminController {
   
   public async upsertDomain(req: Request, res: Response) {
     try {
-      const { id, name, description, assigned_am_ids } = req.body;
+      const body = req.body ?? {};
+      const { id, name, description, assigned_am_ids } = body;
       const currentUserId = req.user?.id as string;
       const currentUserRole = req.user?.role as string;
+      // Key-presence for the org-view fields, so an edit that leaves them out
+      // never clears a parent or head set elsewhere. camelCase accepted too.
+      const pick = (snake: string, camel: string) =>
+        snake in body ? body[snake] : camel in body ? body[camel] : undefined;
       const data = await SuperAdminService.upsertDomain(
-        { userId: id, name, description, assigned_am_ids },
+        {
+          userId: id,
+          name,
+          description,
+          assigned_am_ids,
+          parent_id: pick("parent_id", "parentId"),
+          head_user_id: pick("head_user_id", "headUserId"),
+          sort_order: pick("sort_order", "sortOrder"),
+        },
         currentUserId,
         currentUserRole,
       );
@@ -106,6 +132,12 @@ export class SuperAdminController {
         "Domain with this name already exists": HTTP_statusCode.Conflict,
         "Domain name is required": HTTP_statusCode.BadRequest,
         "Authenticated user is required": HTTP_statusCode.unAuthorized,
+        "sort_order must be a whole number": HTTP_statusCode.BadRequest,
+        "A department cannot be its own parent": HTTP_statusCode.BadRequest,
+        "Parent department not found": HTTP_statusCode.BadRequest,
+        "This parent would create a loop in the department tree": HTTP_statusCode.BadRequest,
+        "Department head not found": HTTP_statusCode.BadRequest,
+        "The department head must belong to the department": HTTP_statusCode.BadRequest,
       };
       sendResponse(res, statusMap[error.message] || HTTP_statusCode.InternalServerError, {
         success: false,
@@ -165,14 +197,17 @@ export class SuperAdminController {
     try {
       const userId = req.user?.id;
       const userRole = req.user?.role;
-      const data = await SuperAdminService.getProjectStats(userId, userRole);
+      const domainId = req.query.domain_id as string | undefined;
+      // Only the access check matters here; projects carry domain_id directly.
+      if (domainId) await SuperAdminService.departmentScope(domainId, userId, userRole);
+      const data = await SuperAdminService.getProjectStats(userId, userRole, domainId || undefined);
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "Stats fetched successfully",
         data,
       });
     } catch (error: any) {
-      sendResponse(res, HTTP_statusCode.InternalServerError, {
+      sendResponse(res, orgErrorCode(error) ?? HTTP_statusCode.InternalServerError, {
         success: false,
         message: error.message || "Fetching stats failed",
       });
@@ -364,8 +399,7 @@ export class SuperAdminController {
 
   public async fetchUsers(req:Request,res:Response){
     try {
-      const manager_id = req.user?.id;
-      const { search, role, isBlocked, project_id, page, limit, is_shared } = req.query;
+      const { search, role, isBlocked, project_id, page, limit, is_shared, domain_id, manager_id } = req.query;
       const userRole = req.user?.role;
       const userId = req.user?.id;
 
@@ -374,9 +408,12 @@ export class SuperAdminController {
         role: role as string,
         isBlocked: isBlocked as string,
         project_id: project_id as string,
+        // The AM caller's own team scoping — not the ?manager_id= filter.
         manager_id: userRole === "AM" ? userId : undefined,
         is_shared:
           is_shared === undefined ? undefined : String(is_shared),
+        department_user_ids: await SuperAdminService.departmentScope(domain_id, userId, userRole),
+        reports_to: typeof manager_id === "string" && manager_id.trim() ? manager_id.trim() : undefined,
         page: Math.max(parseInt(page as string) || 1, 1),
         limit: Math.min(Math.max(parseInt(limit as string) || 10, 1), 100),
       });
@@ -387,6 +424,13 @@ export class SuperAdminController {
         domains: user.is_shared
           ? user.assignedDomains?.map((d: any) => _.pick(d, ["id", "name"])) ?? []
           : undefined,
+        // Org view
+        domain_id: user.domain_id ?? null,
+        domainName: user.primaryDomain?.name ?? null,
+        manager_id: user.manager_id ?? null,
+        managerName: user.manager?.fullName ?? null,
+        jobTitle: user.job_title ?? null,
+        avatar: null,
       }));
 
       sendResponse(res, HTTP_statusCode.OK, {
@@ -400,7 +444,7 @@ export class SuperAdminController {
         },
       });
     } catch (error:any) {
-       sendResponse(res, HTTP_statusCode.unAuthorized, {
+       sendResponse(res, orgErrorCode(error) ?? HTTP_statusCode.unAuthorized, {
         success: false,
         message: error.message || "Fetching failed",
       });
@@ -478,14 +522,20 @@ export class SuperAdminController {
   public async getTaskCount(req:Request,res:Response){
     try {
       const {role,date}=req.query
-      const data=await SuperAdminService.countTask(role as string,date as string)
+      const range = optionalRange(req.query.from, req.query.to);
+      const userIds = await SuperAdminService.departmentScope(
+        req.query.domain_id,
+        req.user?.id,
+        req.user?.role,
+      );
+      const data=await SuperAdminService.countTask(role as string,date as string,{ userIds, range })
         sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "Task counted successful",
          data,
       });
     } catch (error:any) {
-    sendResponse(res, HTTP_statusCode.unAuthorized, {
+    sendResponse(res, orgErrorCode(error) ?? HTTP_statusCode.unAuthorized, {
         success: false,
         message: error.message || "Fetching user failed",
       });
@@ -510,14 +560,20 @@ export class SuperAdminController {
 
   public async getTeamPerformance(req: Request, res: Response) {
     try {
-      const data = await SuperAdminService.getTeamPerformance();
+      const range = optionalRange(req.query.from, req.query.to);
+      const userIds = await SuperAdminService.departmentScope(
+        req.query.domain_id,
+        req.user?.id,
+        req.user?.role,
+      );
+      const data = await SuperAdminService.getTeamPerformance({ userIds, range });
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "Team performance fetched successfully",
         data,
       });
     } catch (error: any) {
-      sendResponse(res, HTTP_statusCode.InternalServerError, {
+      sendResponse(res, orgErrorCode(error) ?? HTTP_statusCode.InternalServerError, {
         success: false,
         message: error.message || "Fetching team performance failed",
       });
@@ -527,14 +583,19 @@ export class SuperAdminController {
   public async getRecentActivity(req: Request, res: Response) {
     try {
       const limit = req.query.limit ? parseInt(req.query.limit as string) : 10;
-      const data = await SuperAdminService.getRecentActivity(limit);
+      const userIds = await SuperAdminService.departmentScope(
+        req.query.domain_id,
+        req.user?.id,
+        req.user?.role,
+      );
+      const data = await SuperAdminService.getRecentActivity(limit, userIds);
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "Recent activity fetched successfully",
         data,
       });
     } catch (error: any) {
-      sendResponse(res, HTTP_statusCode.InternalServerError, {
+      sendResponse(res, orgErrorCode(error) ?? HTTP_statusCode.InternalServerError, {
         success: false,
         message: error.message || "Fetching recent activity failed",
       });
@@ -544,14 +605,19 @@ export class SuperAdminController {
   public async getUpcomingDeadlines(req: Request, res: Response) {
     try {
       const limit = req.query.limit ? parseInt(req.query.limit as string) : 10;
-      const data = await SuperAdminService.getUpcomingDeadlines(limit);
+      const userIds = await SuperAdminService.departmentScope(
+        req.query.domain_id,
+        req.user?.id,
+        req.user?.role,
+      );
+      const data = await SuperAdminService.getUpcomingDeadlines(limit, userIds);
       sendResponse(res, HTTP_statusCode.OK, {
         success: true,
         message: "Upcoming deadlines fetched successfully",
         data,
       });
     } catch (error: any) {
-      sendResponse(res, HTTP_statusCode.InternalServerError, {
+      sendResponse(res, orgErrorCode(error) ?? HTTP_statusCode.InternalServerError, {
         success: false,
         message: error.message || "Fetching upcoming deadlines failed",
       });

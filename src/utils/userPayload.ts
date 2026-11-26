@@ -37,6 +37,7 @@ export interface NormalizedUserPayload {
   joining_date?: string | null;
   require_password_change?: boolean;
   projects?: string;
+  domain_id?: string | null;
   domain_ids?: string | string[];
   sendWelcomeEmail?: boolean;
 }
@@ -73,6 +74,9 @@ export const normalizeUserPayload = (body: any): NormalizedUserPayload => {
       pick("send_welcome_email", "sendWelcomeEmail"),
     ),
 
+    // The primary department. Distinct from domain_ids, which is the shared
+    // user's many-to-many set.
+    domain_id: blankToNull(pick("domain_id", "domainId")),
     projects: pick("projects", "projectIds"),
     domain_ids: pick("domain_ids", "domainIds"),
   };

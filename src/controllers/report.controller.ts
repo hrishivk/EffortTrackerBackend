@@ -95,7 +95,9 @@ export class ReportController {
         range,
         project_id: optional(req.query.project_id),
         group_id: optional(req.query.group_id),
-        department_id: optional(req.query.department_id),
+        // domain_id is the org view's name for it; department_id stays for
+        // the callers that already send it.
+        department_id: optional(req.query.domain_id) ?? optional(req.query.department_id),
         page,
         limit,
       });
