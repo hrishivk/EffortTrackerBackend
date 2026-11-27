@@ -258,13 +258,7 @@ export class WorkspaceRepository {
     return { perRoom, total, done };
   }
 
-  // The list carries a SLIM rooms array — id, name, position and nothing else —
-  // so the sidebar tree opens a workspace without a second request. Members are
-  // deliberately left off: the tree only names rooms, and embedding every
-  // member of every workspace would make the list quadratic in team size.
-  //
-  // Scoped the same way as the detail read: a plain member's row lists only
-  // their own rooms.
+
   public async list(where: any) {
     try {
       const rows = await Workspace.findAll({
@@ -282,8 +276,6 @@ export class WorkspaceRepository {
             attributes: ["id", "name", "description", "position"],
             required: false,
           },
-          // Same reason as the detail read: the list draws the same status
-          // badge, so it needs the name too.
           {
             model: User,
             as: "completedBy",
@@ -303,17 +295,7 @@ export class WorkspaceRepository {
     }
   }
 
-  // The ids of one page of workspaces, plus the total behind it.
-  //
-  // Two steps rather than a LIMIT on list() itself: list() joins `rooms`, a
-  // hasMany, and a LIMIT over a row-multiplying join either truncates a
-  // workspace's rooms or counts one workspace several times, depending on how
-  // Sequelize decides to build the subquery. Paging over bare ids cannot do
-  // either, and the second read is by primary key.
-  //
-  // `where` is the SAME claim predicate the list applies, so `total` counts
-  // what the caller may actually see — a count of every workspace in the
-  // organisation would make the page count wrong for everybody but SP.
+  
   public async listPageIds(
     where: any,
     page: number,
@@ -334,12 +316,6 @@ export class WorkspaceRepository {
     }
   }
 
-  // Decorates one already-fetched list row. Split out from list() because the
-  // service now decides per row whether the caller gets the row at all or a
-  // locked stub, and only the readable ones are worth the counts.
-  //
-  // can_manage is per row and decided by the service: an AM manages the ones
-  // they created or were assigned to, not the ones another AM did.
   public async decorateListRow(row: any, viewer: WorkspaceViewer) {
     return await this.decorateWorkspace(row, viewer);
   }
@@ -563,8 +539,7 @@ export class WorkspaceRepository {
       });
       if (!room) return null;
 
-      // Same task counts the room cards carry, so a single-room response and an
-      // embedded one have the same shape.
+    
       const json: any = room.toJSON();
       const [total, done] = await Promise.all([
         Task.count({ where: { room_id: id } }),
@@ -1241,7 +1216,7 @@ export class WorkspaceRepository {
     }
   }
 
-  // ── Validation helpers ────────────────────────────────────────────────────
+ 
 
   public async projectExists(project_id: string): Promise<boolean> {
     try {
@@ -1251,8 +1226,6 @@ export class WorkspaceRepository {
     }
   }
 
-  // Returns the ids that are NOT real users, so the caller can name them in a
-  // 400 instead of letting the FK blow up mid-transaction.
   public async missingUserIds(ids: string[]): Promise<string[]> {
     try {
       if (ids.length === 0) return [];

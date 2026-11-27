@@ -36,8 +36,6 @@ export class TaskGroupRepository {
       throw error;
     }
   }
-
-  // The lanes one user has hidden on one board (room_id null = own board).
   public async hiddenGroupIds(
     user_id: string,
     room_id: string | null = null
@@ -187,9 +185,7 @@ export class TaskGroupRepository {
     }
   }
 
-  // Only rows still carrying `fromStatus` (the group's name, as stored before
-  // custom lanes kept the task's own status). A task parked with a real status
-  // keeps it — overwriting that would complete or reopen work by accident.
+  
   public async syncTaskStatuses(
     group_id: string,
     fromStatus: string,

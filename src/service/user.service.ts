@@ -52,6 +52,8 @@ export interface BulkTaskRow {
   project?: string;
   project_id?: string;
   assigned_to: string;
+  // Set when the import is run from inside a room; absent is the own board.
+  room_id?: string;
   priority: string;
   status?: string;
   start_date?: string;
@@ -825,13 +827,18 @@ export class userService {
         typeof task.description === "string" ? task.description.trim() : "";
       if (!description) return "Description is required";
 
+      // No project and no room is a General task, as in addTask. A room's
+      // tasks still need their project.
       const projectId = task.project_id ?? task.project;
-      if (!projectId) return "Project is required";
-      const project: any = projectById.get(String(projectId));
-      if (!project) return "Project not found";
-      if (project.status !== "active") return "Project is not active";
-      if (selfOnly && !myProjects.has(String(projectId))) {
-        return "Not assigned to this project";
+      if (!projectId) {
+        if (task.room_id) return "Project is required";
+      } else {
+        const project: any = projectById.get(String(projectId));
+        if (!project) return "Project not found";
+        if (project.status !== "active") return "Project is not active";
+        if (selfOnly && !myProjects.has(String(projectId))) {
+          return "Not assigned to this project";
+        }
       }
 
       if (!task.assigned_to) return "Assignee is required";
@@ -888,7 +895,8 @@ export class userService {
         continue;
       }
 
-      const projectId = String(task.project_id ?? task.project);
+      const rawProjectId = task.project_id ?? task.project;
+      const projectId = rawProjectId ? String(rawProjectId) : undefined;
       const taskDate = parseOptionalDateOnly(task.task_date, "task_date")!;
       const due = parseOptionalDateOnly(
         task.due_date ?? task.end_time,
@@ -905,6 +913,10 @@ export class userService {
           created_by: actor.id,
           assigned_to: task.assigned_to,
           project_id: projectId,
+          room_id:
+            typeof task.room_id === "string" && task.room_id.trim()
+              ? task.room_id.trim()
+              : undefined,
           description: task.description.trim(),
           priority: task.priority,
           status: completed ? "completed" : "yet_to_start",

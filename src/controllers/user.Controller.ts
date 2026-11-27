@@ -138,12 +138,10 @@ export class userController {
       });
     }
   }
-  // POST /role-user/task/bulk — Excel import. Always 200 once the request
-  // itself is acceptable; per-row failures come back in `errors`.
+
   public async bulkTask(req: Request, res: Response): Promise<any> {
     try {
-      // SP/AM import for their team; USER/DEVLOPER for themselves only, which
-      // bulkAddTasks enforces per row. MG has no task-create screen.
+
       const role = req.user?.role;
       if (
         role !== Role.SuperAdmin &&
@@ -189,9 +187,9 @@ export class userController {
     try {
       const { date, from, to, assigned_to, project, status, page = "1", limit = "10", extended, min_extensions, room_id, group_id } = req.query;
 
-      // The room board: `?room_id=` narrows the list to tasks created in that
-      // room. It narrows only — who may see what is still decided exactly as
-      // without it. Absent means no room step at all (the dashboard's My Tasks).
+
+
+      
       let roomId: string | undefined;
       if (room_id !== undefined) {
         if (typeof room_id !== "string" || !room_id.trim()) {
@@ -203,10 +201,6 @@ export class userController {
         }
         roomId = room_id.trim();
       }
-
-      // One lane of the board: `?group_id=` narrows to the cards parked in
-      // that group. Like room_id it only narrows what the caller can already
-      // see, and combines with every other filter.
       let groupId: string | undefined;
       if (group_id !== undefined) {
         if (typeof group_id !== "string" || !group_id.trim()) {
@@ -218,11 +212,6 @@ export class userController {
         }
         groupId = group_id.trim();
       }
-
-      // "What has slipped, and why" in one request. Two spellings of one
-      // filter: `?extended=true` is the common case and means at least one
-      // push; `?min_extensions=2` is the badge case — tasks pushed more than
-      // once. An explicit min wins if both arrive.
       let minExtensions: number | undefined;
       if (min_extensions !== undefined) {
         const parsed = Math.floor(Number(min_extensions));

@@ -10,9 +10,6 @@ const JWT_REfresh_SECRET = envConfig.REFRESH_SECRET as string;
 const CredentialHashing = new credentialHashing();
 declare module "express-serve-static-core" {
   interface Request {
-    // sid: the login-session id. Optional because a token minted before this
-    // claim existed is still valid until it expires; readers must treat a
-    // missing sid as "no session-scoped unlocks", never as a wildcard.
     user?: JwtPayload & { id: string; email: string; role: Role; sid?: string };
   }
 }
