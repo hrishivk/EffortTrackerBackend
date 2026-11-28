@@ -17,6 +17,8 @@ export class Task extends Model {
   public position!: number;
   // Set on the PARENT: its children may only start in `position` order.
   public sequential!: boolean;
+  // Created by the Excel import; an imported room task lists only in its room.
+  public imported!: boolean;
   // Comments on this row, newest last. A subtask is a row in this same table,
   // so this covers comments on a main task and on a single subtask alike.
   public comments!: TaskComment[];
@@ -91,6 +93,13 @@ export const initTaskModel = (sequelize: Sequelize) => {
       // Lives on the parent. Default false, so every task that already exists
       // keeps letting its children start in any order.
       sequential: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+      },
+      // Created by the Excel import (migration 032). An imported room task
+      // is listed only on its room's board.
+      imported: {
         type: DataTypes.BOOLEAN,
         allowNull: false,
         defaultValue: false,

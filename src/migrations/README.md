@@ -32,6 +32,7 @@ psql -U <username> -d <database> -f src/migrations/028_task_group_hides.sql
 psql -U <username> -d <database> -f src/migrations/029_task_groups_marks_status.sql
 psql -U <username> -d <database> -f src/migrations/030_task_groups_with_default_lanes.sql
 psql -U <username> -d <database> -f src/migrations/031_org_view.sql
+psql -U <username> -d <database> -f src/migrations/032_task_imported.sql
 ```
 
 (011-013 and 020 are not described below; they were added without a README

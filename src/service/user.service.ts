@@ -618,6 +618,7 @@ export class userService {
         start_time:
           taskStatus === "in_progress" ? new Date().toISOString() : undefined,
         completed_at: data.completed_at,
+        imported: data.imported,
         status: taskStatus,
         parent_id: data.parent_id ?? null,
         room_id: resolvedRoomId,
@@ -874,11 +875,8 @@ export class userService {
       if (start && due && due < start) {
         return "Due date cannot be before start date";
       }
-      // Back-filling finished work is the point; inventing finished work in
-      // the future is not.
-      if (status === "completed" && taskDate >= today) {
-        return "Only past-dated tasks can be imported as completed";
-      }
+      // An import logs finished work, so a completed row may carry any date,
+      // today's and future ones included.
       return null;
     };
 
@@ -904,10 +902,11 @@ export class userService {
       );
       const completed = task.status === "completed";
 
-      // Finished at the end of the day it was finished, never "now", or it
-      // reads as completed today. The due date when it is in the past, else
-      // the task date (already checked to be in the past).
-      const completedOn = due && due < today ? due : taskDate;
+      // Finished at the end of the day it was finished: the due date when it
+      // is in the past, else the task date — but never later than today, so a
+      // future-dated row is not stamped as finished in the future.
+      const finishedOn = due && due < today ? due : taskDate;
+      const completedOn = finishedOn > today ? today : finishedOn;
       try {
         await this.addTask({
           created_by: actor.id,
@@ -927,6 +926,7 @@ export class userService {
           // flow sends it. For a completed one it is the finish moment instead.
           end_time: completed ? undefined : due,
           completed_at: completed ? `${completedOn}T23:59:59` : undefined,
+          imported: true,
         });
         created++;
       } catch (error: any) {

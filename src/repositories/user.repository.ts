@@ -605,6 +605,7 @@ export class UserRepository {
       }
       if (group_id) taskData.group_id = group_id;
       if (room_id) taskData.room_id = room_id;
+      if (data.imported) taskData.imported = true;
       if (parent_id) taskData.parent_id = parent_id;
       // Only meaningful on a child. Written unconditionally so a caller can
       // send 0 deliberately — `if (position)` would drop it.
@@ -879,6 +880,13 @@ export class UserRepository {
       // counts under the same where, so totalPages narrows with it.
       if (roomId) {
         whereClause.room_id = roomId;
+      } else {
+        // My Tasks and General: an imported room task belongs to its room's
+        // board only.
+        whereClause[Op.and] = [
+          ...((whereClause[Op.and] as any[]) ?? []),
+          { [Op.or]: [{ imported: false }, { room_id: null }] },
+        ];
       }
       // One lane of the board, narrowed the same way as roomId.
       if (groupId) {

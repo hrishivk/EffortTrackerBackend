@@ -53,6 +53,8 @@ export interface AddTask {
   // Set only when a task is created already completed (the bulk import). Goes
   // into end_time as the finish moment, never mirrored into due_date.
   completed_at?: string;
+  // Set by the bulk import. An imported room task lists only in its room.
+  imported?: boolean;
   parent_id?: string | null;
   tags?: unknown;
   subtasks?: SubTaskInput[];
