@@ -69,6 +69,9 @@ export interface BulkTaskResult {
 
 export const BULK_TASK_LIMIT = 500;
 
+// POST /role-user/tasks/bulk-delete takes at most this many ids per request.
+export const BULK_DELETE_LIMIT = 200;
+
 // Raised when a subtask is started out of turn on a sequential parent. Carries
 // its own name so the controller can answer 409 without matching on the
 // message text - the message is written to be shown to the user as-is
@@ -1627,6 +1630,41 @@ export class userService {
       console.error("Error in deleteTask:", error);
       throw error;
     }
+  }
+
+  // POST /role-user/tasks/bulk-delete — several tasks in one request. Each id
+  // goes through deleteTask, so ownership and both locks are checked per task;
+  // a refused task is reported and the rest still go. Not one transaction on
+  // purpose: one locked task must not keep the others on the board.
+  public async bulkDeleteTasks(data: {
+    ids: unknown;
+    user?: { id?: string; role?: string };
+  }) {
+    if (!Array.isArray(data.ids) || !data.ids.length) {
+      throw new TaskValidationError("ids must be a non-empty array");
+    }
+    const ids = [...new Set(data.ids.map((id) => String(id ?? "").trim()).filter(Boolean))];
+    if (!ids.length) throw new TaskValidationError("ids must be a non-empty array");
+    if (ids.length > BULK_DELETE_LIMIT) {
+      throw new TaskValidationError(`At most ${BULK_DELETE_LIMIT} tasks per request`);
+    }
+
+    const deleted: string[] = [];
+    const failed: { id: string; message: string }[] = [];
+    let deleted_subtasks = 0;
+    // Sequential: a main task and one of its subtasks can both be in the list,
+    // and the cascade must finish before the child's own delete is tried.
+    for (const id of ids) {
+      if (deleted.includes(id)) continue;
+      try {
+        const res = await this.deleteTask({ id, user: data.user });
+        deleted.push(res.id, ...res.deleted_subtask_ids);
+        deleted_subtasks += res.deleted_subtasks;
+      } catch (error: any) {
+        failed.push({ id, message: error?.message || "Task delete failed" });
+      }
+    }
+    return { deleted: deleted.length - deleted_subtasks, deleted_subtasks, deleted_ids: deleted, failed };
   }
 
   // POST /role-user/task/subtask — one subtask onto an existing parent, for

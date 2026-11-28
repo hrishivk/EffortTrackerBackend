@@ -542,6 +542,30 @@ export class userController {
     }
   }
 
+  public async bulkDeleteTasks(req: Request, res: Response) {
+    try {
+      const data = await UserService.bulkDeleteTasks({
+        ids: req.body?.ids,
+        user: { id: req.user?.id, role: req.user?.role },
+      });
+      sendResponse(res, HTTP_statusCode.OK, {
+        success: true,
+        message: data.failed.length
+          ? `${data.deleted} deleted, ${data.failed.length} refused`
+          : `${data.deleted} task${data.deleted === 1 ? "" : "s"} deleted`,
+        data,
+      });
+    } catch (error: any) {
+      sendResponse(
+        res,
+        error.name === "TaskValidationError"
+          ? HTTP_statusCode.BadRequest
+          : HTTP_statusCode.TaskFailed,
+        { success: false, message: error.message || "Bulk delete failed" }
+      );
+    }
+  }
+
   public async deleteTaskComment(req: Request, res: Response) {
     try {
       const user_id = req.user?.id;

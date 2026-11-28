@@ -34,6 +34,8 @@ export class UserRoute {
     // the task's owners — deliberately stricter than the read rule, since on a
     // room board "anyone who can see it" must not mean "anyone can destroy it".
     this.router.delete("/task", roleGuards.allAcess, this.controller.deleteTask);
+    // Several at once, { ids: [...] }; each id gets deleteTask's own checks.
+    this.router.post("/tasks/bulk-delete", roleGuards.allAcess, this.controller.bulkDeleteTasks);
 
     // Push a task's deadline, with a required reason, recorded as an event
     // rather than a silent edit of due_date. See UserService.extendTask.
