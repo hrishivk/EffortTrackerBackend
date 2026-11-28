@@ -1289,6 +1289,31 @@ export class UserRepository {
     }
   }
 
+  // Reassigns a task by re-pointing it at another daily log — assignment is
+  // the log's (created_by, assigned_to) pair, not a column on tasks.
+  // `clearGroup` drops a personal lane that belongs to the old owner's board.
+  public async moveTaskToLog(
+    task: Task,
+    dailyLogId: string,
+    clearGroup: boolean,
+    transaction?: Transaction
+  ): Promise<Task> {
+    try {
+      const fields = ["daily_log_id", "updated_at"];
+      task.daily_log_id = dailyLogId;
+      if (clearGroup) {
+        task.group_id = null;
+        fields.push("group_id");
+      }
+      task.updated_at = new Date();
+      await task.save({ fields, transaction });
+      return task;
+    } catch (error) {
+      console.error("Error moving task to daily log:", error);
+      throw error;
+    }
+  }
+
   // Deletes one task and, when it is a main task, its subtasks.
   //
   // The children are destroyed EXPLICITLY rather than left to the

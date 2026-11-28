@@ -28,6 +28,12 @@ export interface TaskStatusUpdate {
   // Parent-only. Rejected on a row that has a parent_id — a subtask has no
   // children to order.
   sequential?: unknown;
+
+  // Subtask-only. Reassigning moves the row to the new assignee's daily log
+  // for the same day, since assignment IS the log's (created_by, assigned_to)
+  // pair. `actor_id` is the caller, for the "assigned to you" notification.
+  assigned_to?: string;
+  actor_id?: string;
 }
 
 // POST /role-user/task/subtask — add one subtask to an existing parent.

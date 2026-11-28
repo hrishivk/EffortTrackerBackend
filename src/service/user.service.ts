@@ -1055,7 +1055,8 @@ export class userService {
         data.start_date !== undefined ||
         data.due_date !== undefined ||
         data.tags !== undefined ||
-        data.sequential !== undefined;
+        data.sequential !== undefined ||
+        data.assigned_to !== undefined;
       if (status === undefined && group_id === undefined && !editsContent) {
         throw new Error(
           "Nothing to update: send status, group_id or an edited field"
@@ -1130,6 +1131,91 @@ export class userService {
       ) {
         throw new TaskValidationError("due_date cannot be before start_date");
       }
+
+      // Reassigning a subtask. Assignment IS the daily log's (created_by,
+      // assigned_to) pair, so the row moves to the new assignee's log for the
+      // same day — found or created here, the same way addSubtask does it, and
+      // re-pointed inside the transaction below. Main tasks are not covered:
+      // moving one would carry its whole board with it.
+      const currentLog: any =
+        (task as any).dailyLog ?? task.dataValues?.dailyLog;
+      let moveToLog: any = null;
+      let clearGroup = false;
+      const reassignTo = String(data.assigned_to ?? "").trim();
+      if (data.assigned_to !== undefined) {
+        if (!(task as any).parent_id) {
+          throw new TaskValidationError(
+            "assigned_to can only be changed on a subtask"
+          );
+        }
+        if (!reassignTo) {
+          throw new TaskValidationError("assigned_to cannot be empty");
+        }
+        const currentOwner =
+          currentLog?.assigned_to ?? currentLog?.dataValues?.assigned_to;
+        if (reassignTo !== String(currentOwner ?? "")) {
+          if (statusSlug(task.dataValues.status) === "completed") {
+            throw new TaskValidationError(
+              "A completed subtask cannot be reassigned"
+            );
+          }
+          // The rule POST /task/subtask applies: inside a room only an ACTIVE
+          // member can be handed work; outside one the user has to exist.
+          const room_id: string | null = (task as any).room_id ?? null;
+          if (room_id) {
+            const allowed = await workspaceRepository.activeRoomMemberIds(room_id);
+            if (!allowed.includes(reassignTo)) {
+              throw new TaskValidationError(
+                `assigned_to (${reassignTo}) is not a member of room ${room_id}`
+              );
+            }
+          } else {
+            const missing = await workspaceRepository.missingUserIds([reassignTo]);
+            if (missing.includes(reassignTo)) {
+              throw new TaskValidationError(
+                `assigned_to (${reassignTo}) is not a known user`
+              );
+            }
+          }
+
+          const created_by: string | undefined =
+            currentLog?.created_by ?? currentLog?.dataValues?.created_by;
+          const rawDate = currentLog?.date ?? currentLog?.dataValues?.date;
+          const day =
+            rawDate instanceof Date
+              ? rawDate.toISOString().split("T")[0]
+              : rawDate
+                ? String(rawDate).slice(0, 10)
+                : new Date().toISOString().split("T")[0];
+          let log = await userRepository.findDailyTaskLog(day, created_by, reassignTo);
+          if (!log) {
+            log = await userRepository.createDailyTaskLog(
+              created_by,
+              reassignTo,
+              day,
+              (task as any).project_id ?? undefined
+            );
+          }
+          if (log?.dataValues?.locked) {
+            throw new Error("Daily log is locked. Cannot update task status.");
+          }
+          moveToLog = log;
+
+          // A personal lane belongs to the old assignee's board; the card
+          // would sit in a lane its new owner cannot see. Shared and room
+          // lanes travel with it.
+          const currentGroupId: string | null = (task as any).group_id ?? null;
+          if (currentGroupId && group_id === undefined) {
+            const group = await taskGroupRepository.findById(currentGroupId);
+            clearGroup =
+              !!group &&
+              !group.is_shared &&
+              !group.room_id &&
+              group.user_id !== reassignTo;
+          }
+        }
+      }
+
       let derivedStatus: string | undefined;
       if (group_id) {
         const group = await taskGroupRepository.findById(group_id);
@@ -1242,6 +1328,15 @@ export class userService {
           // updateTaskFields on why the two are not merged.
           child = await userRepository.updateTaskFields(child, content, t);
 
+          if (moveToLog) {
+            child = await userRepository.moveTaskToLog(
+              child,
+              moveToLog.id,
+              clearGroup,
+              t
+            );
+          }
+
           // NO parent roll-up. A task and its subtasks are separate units of
           // work with separate clocks: finishing the last child used to write
           // the parent's status, end_time and total_seconds, which recorded
@@ -1270,6 +1365,24 @@ export class userService {
           parent,
           children: siblings,
           completed_child: updated,
+        });
+      }
+
+      // Section 6, event 1, for a reassignment: the new owner is told the
+      // same way as when a subtask is first handed to them.
+      if (moveToLog && parent) {
+        const [actor] = data.actor_id
+          ? await userRepository.findUsersLite([data.actor_id])
+          : [];
+        await taskNotifications.subtaskAssigned({
+          assignee_id: reassignTo,
+          actor_id: data.actor_id,
+          actor_name: (actor as any)?.fullName ?? null,
+          subtask_description: (updated as any).description,
+          parent_description: (parent as any).description,
+          parent_id: (parent as any).id,
+          position: (updated as any).position,
+          sequential: (parent as any).sequential === true,
         });
       }
 

@@ -317,6 +317,8 @@ export class userController {
       if ("due_date" in body) payload.due_date = body.due_date;
       if ("tags" in body) payload.tags = body.tags;
       if ("sequential" in body) payload.sequential = body.sequential;
+      if ("assigned_to" in body) payload.assigned_to = body.assigned_to;
+      payload.actor_id = req.user?.id;
 
       const data = await UserService.updateStatus(payload);
       sendResponse(res, HTTP_statusCode.OK, {
