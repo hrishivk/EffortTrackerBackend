@@ -198,7 +198,6 @@ export class SuperAdminController {
       const userId = req.user?.id;
       const userRole = req.user?.role;
       const domainId = req.query.domain_id as string | undefined;
-      // Only the access check matters here; projects carry domain_id directly.
       if (domainId) await SuperAdminService.departmentScope(domainId, userId, userRole);
       const data = await SuperAdminService.getProjectStats(userId, userRole, domainId || undefined);
       sendResponse(res, HTTP_statusCode.OK, {
@@ -214,10 +213,7 @@ export class SuperAdminController {
     }
   }
 
-  // GET /role-sp/project?id=... - one project, for the edit screen.
-  //
-  // Used to be an unrouted copy of listProjects that ignored `id`, which is why
-  // the frontend's edit fetch 404'd: no GET was ever registered on /project.
+
   public async fetchProject(req: Request, res: Response) {
     try {
       const { id } = req.query;
@@ -258,11 +254,7 @@ export class SuperAdminController {
       });
     }
   }
-  // PATCH /role-sp/project?id=<id> (and the /role-am twin) — the edit modal's
-  // save. A partial update: only the keys present in the body are written.
-  //
-  // The id is read from the query string, where the client puts it, with the
-  // body as a fallback so both spellings work.
+  
   public async patchProject(req: Request, res: Response) {
     try {
       const id = (req.query.id as string) || req.body?.id;
@@ -275,8 +267,6 @@ export class SuperAdminController {
       }
       const body = req.body ?? {};
       const patch: ProjectPatchDTO = {};
-      // Key-presence, not truthiness: "" clears a nullable column and null
-      // clears a date, and `if (body.end_date)` would drop both.
       if ("name" in body) patch.name = body.name;
       if ("description" in body) patch.description = body.description;
       if ("domain_id" in body) patch.domain_id = body.domain_id;
@@ -307,7 +297,6 @@ export class SuperAdminController {
         "Project with this name already exists": HTTP_statusCode.Conflict,
       };
       const statusCode =
-        // A push with no reason, and anything else the activity log rejects.
         error.name === "ProjectValidationError"
           ? HTTP_statusCode.BadRequest
           : statusMap[message] ||

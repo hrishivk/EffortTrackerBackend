@@ -241,11 +241,6 @@ export class userController {
         }
         throw error;
       }
-
-      // ?domain_id= narrows to tasks assigned to that department's people. It
-      // only narrows: who may see what is decided exactly as without it. The
-      // department itself is checked like every org-view read (403 outside an
-      // AM's departments, and for USER/DEVLOPER).
       let assigneeIds: string[] | undefined;
       if (req.query.domain_id !== undefined && req.query.domain_id !== "") {
         try {
