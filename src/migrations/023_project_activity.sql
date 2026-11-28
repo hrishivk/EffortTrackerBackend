@@ -1,0 +1,32 @@
+-- Migration: project activity log
+--
+-- One append-only history per project: created, renamed, status_changed,
+-- due_date_changed, extended, updated, member_added, member_removed. Editing
+-- a project overwrote the row in place, so moving an end date erased the old
+-- one and left no record of who moved it or why.
+--
+-- A JSONB COLUMN, not a table — unlike task_extensions (022), and the reason
+-- the two differ is worth stating because it looks inconsistent otherwise.
+--
+-- Extensions are queried ACROSS tasks: /task-list?extended=true has to count
+-- and filter every task on the board, which a jsonb array cannot do without
+-- unnesting the whole table. Project activity is only ever read one project at
+-- a time — the detail panel's log, and a badge that is just the array length.
+-- There is no "show me every project that slipped" list. So this follows the
+-- tasks.comments pattern instead, which is the same shape of data with the
+-- same access pattern.
+--
+-- If a cross-project filter is ever wanted, this column migrates into a table:
+-- jsonb_array_elements over ten projects is a one-off script, not a problem.
+--
+-- NOT NULL DEFAULT '[]' so every existing project starts with an empty log
+-- rather than a NULL that every reader would have to guard.
+--
+-- CONCURRENCY: every write MUST go through a pure-SQL append
+--   activity = activity || CAST(:elements AS jsonb)
+-- never a read-modify-write in Node. Two managers saving the same project in
+-- the same moment would otherwise drop each other's entries. This is the same
+-- rule tasks.comments follows; see task-comment.repository.ts.
+
+ALTER TABLE tracker.projects
+  ADD COLUMN IF NOT EXISTS activity JSONB NOT NULL DEFAULT '[]';
